@@ -443,12 +443,17 @@ class abstractModel(QAbstractItemModel):
         if column > 0:
             column = 0
 
+        # rowCount() is 0 for the other columns (e.g. dropped or pasted on the
+        # POV cell of a folder in the outline view)
+        if parent.isValid() and parent.column() != 0:
+            parent = parent.sibling(parent.row(), 0)
+
         if row != -1:
             beginRow = row
         elif parent.isValid():
-            beginRow = self.rowCount(parent) + 1
+            beginRow = self.rowCount(parent)
         else:
-            beginRow = self.rowCount() + 1
+            beginRow = self.rowCount()
 
         if action == Qt.CopyAction:
             # Behavior if parent is a text item
@@ -521,6 +526,7 @@ class abstractModel(QAbstractItemModel):
 
         # Insert only if parent is folder
         if parentItem.isFolder():
+            row = max(0, min(row, parentItem.childCount()))
             self.beginInsertRows(parent, row, row + len(items) - 1) # Create space.
 
             for i in items:

@@ -297,3 +297,38 @@ def test_copyPasteAndDuplicateInSameProject(MWSampleProject):
     view.duplicate()
     assert duplicateIDs(model) == []
     assert len(model.rootItem.listAllIDs()) == count + 8
+
+
+def test_dropOnFolderSignalsInsertedRows(outlineModelStandalone):
+    """
+    Dropping or pasting on a folder (row == -1) appends the items, and the
+    model must signal the rows where they are really inserted.
+    """
+    from manuskript.enums import Outline
+    model = outlineModelStandalone
+    folder = model.indexFromItem(model.rootItem.child(0))
+    other = model.indexFromItem(model.rootItem.child(1))
+    textA = model.index(0, 0, folder)
+    # Dropped or pasted on another cell of the folder's row (outline view)
+    folderPOV = folder.sibling(folder.row(), Outline.POV)
+
+    signaled = []
+    def rowsAboutToBeInserted(parent, first, last):
+        signaled.append((parent.internalPointer().title()
+                         if parent.isValid() else "Root",
+                         first, last, model.rowCount(parent)))
+    model.rowsAboutToBeInserted.connect(rowsAboutToBeInserted)
+
+    for parent, expected in [(other, ("Other folder", 0, 0, 0)),
+                             (folder, ("Folder", 2, 2, 2)),
+                             (folderPOV, ("Folder", 3, 3, 3)),
+                             (QModelIndex(), ("Root", 2, 2, 2))]:
+        signaled.clear()
+        mimeData = model.mimeData([textA])
+        assert model.dropMimeData(mimeData, Qt.CopyAction, -1, 0, parent)
+        assert signaled == [expected]
+        if parent.isValid():
+            parent = parent.sibling(parent.row(), 0)
+        row = expected[1]
+        assert model.index(row, 0, parent).internalPointer().title() == "Text A"
+        assert model.rowCount(parent) == row + 1
