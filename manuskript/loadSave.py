@@ -27,6 +27,7 @@ def clearSaveCache():
     """The project is not saved where it was loaded from (new project, "Save as...")."""
     v1.cache = {}
     v1.freshTarget = True
+    v1.unreadable = {}
 
 
 def loadProject(project):

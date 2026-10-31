@@ -49,6 +49,11 @@ cache = {}
 # its folder is never a fresh target, even if nothing could be loaded from it.
 freshTarget = True
 
+# Files and folders of the project folder that could not be read when the project was loaded
+# (path relative to the project folder: reason). Their content is not in the project, so
+# saveProject() never overwrites or removes them.
+unreadable = {}
+
 # Files that saveProject() writes at the root of a project folder (besides the
 # "outline" and "characters" folders).
 projectFiles = ["MANUSKRIPT", "infos.txt", "summary.txt", "labels.txt", "status.txt",
@@ -156,6 +161,15 @@ def writeFile(filename, content, sync=False):
         except OSError:
             pass
         raise
+
+
+def isUnreadable(path):
+    """
+    Returns True if path (relative to the project folder) is, is in, or contains a file or
+    folder that could not be read when the project was loaded.
+    """
+    return any(path == u or path.startswith(u + os.sep) or u.startswith(path + os.sep)
+               for u in unreadable)
 
 
 def saveProject(zip=None):
@@ -463,6 +477,15 @@ def saveProject(zip=None):
         for path, content in files:
             filename = os.path.join(dir, folder, path)
 
+            # A file that could not be read when the project was loaded is not overwritten
+            # (it is not in the cache, but its content is not in the project either).
+            if isUnreadable(path):
+                LOGGER.error("Cannot write file %s: it could not be read when the project was "
+                             "loaded.", filename)
+                filesWithPermissionErrors.append("{} ({})".format(
+                    filename, unreadable.get(path, "could not be read")))
+                continue
+
             # Check if content is in cache, and write if necessary
             # (also if the file has disappeared from disk since it was cached)
             if path not in cache or cache[path] != content or not os.path.exists(filename):
@@ -515,6 +538,29 @@ def saveProject(zip=None):
 
             keepOldPath(mw.mdlOutline.rootItem)
 
+        # Files and folders that could not be read when the project was loaded are not part of
+        # the project, so they are not written with the other files of a renamed or moved
+        # folder. They are moved to its new place once it has been written: left in the old
+        # folder, they would no longer be loaded once its folder.txt has been removed.
+        entries = list(unreadable)
+        for old, new in moves:
+            if new in notMoved or not os.path.isdir(os.path.join(dir, folder, new)):
+                continue
+            for u in [u for u in entries if u in unreadable and os.path.dirname(u) == old]:
+                target = os.path.join(new, os.path.basename(u))
+                try:
+                    if target.lower() in written or \
+                            os.path.lexists(os.path.join(dir, folder, target)):
+                        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), target)
+                    os.replace(os.path.join(dir, folder, u), os.path.join(dir, folder, target))
+                except OSError as e:
+                    # The old folder then keeps its folder.txt (see below)
+                    LOGGER.error("Cannot move %s to %s: %s", u, target, e)
+                    continue
+                LOGGER.debug("* Moved %s to %s", u, target)
+                for k in [k for k in unreadable if k == u or k.startswith(u + os.sep)]:
+                    unreadable[target + k[len(u):]] = unreadable.pop(k)
+
         for path in phantoms:
             filename = os.path.join(dir, folder, path)
 
@@ -531,11 +577,17 @@ def saveProject(zip=None):
                 if isWrittenFile:
                     LOGGER.debug("* Not removing %s: it is the same file as %s", path, same)
 
+                elif isUnreadable(path):
+                    LOGGER.debug("* Not removing %s: it could not be read when loading", path)
+
                 elif os.path.basename(path) == "folder.txt" and any(
-                        u.startswith(os.path.dirname(path) + os.sep) for u in notMoved.values()):
-                    # Without it, the old files kept above would no longer be loaded.
+                        u.startswith(os.path.dirname(path) + os.sep)
+                        for u in list(unreadable) + list(notMoved.values())):
+                    # Without it, the files of its folder that could not be read when loading
+                    # (and could not be moved with it), and the old files kept above, would no
+                    # longer be loaded.
                     LOGGER.warning("* Not removing %s: its folder holds files that could not be "
-                                   "moved", path)
+                                   "read when loading, or that could not be moved", path)
                     continue
 
                 elif os.path.isdir(filename):
@@ -793,7 +845,6 @@ def loadProject(project, zip=None):
 
     mw = mainWindow()
     errors = list()
-    filesWithPermissionErrors = list()
 
     ####################################################################################################################
     # Read and store everything in a dict
@@ -818,7 +869,22 @@ def loadProject(project, zip=None):
         path = os.path.join(dir, folder, "")
 
         files = {}
-        for dirpath, dirnames, filenames in os.walk(path):
+        # Files and folders that cannot be read (relative path: reason)
+        notRead = OrderedDict()
+
+        def reason(e):
+            return getattr(e, "strerror", None) or str(e)
+
+        def walkError(e):
+            # A folder that cannot be listed (or the project folder does not exist)
+            p = os.path.relpath(e.filename, path) if e.filename else "."
+            p = "" if p == "." else p
+            # Hidden folders are not loaded anyway
+            if not any(c[:1] == "." for c in p.split(os.sep)):
+                LOGGER.error("Cannot read folder %s: %s", e.filename, e)
+                notRead[p] = reason(e)
+
+        for dirpath, dirnames, filenames in os.walk(path, onerror=walkError):
             p = dirpath.replace(path, "")
             # Skip directories that begin with a period
             if p[:1] == ".":
@@ -831,27 +897,47 @@ def loadProject(project, zip=None):
                 if f[:1] == ".":
                     continue
                 # mode = "r" + ("b" if f[-4:] in [".xml", "opml"] else "")
-                if f[-4:] in [".xml", "opml"]:
-                    with open(os.path.join(dirpath, f), "rb") as fo:
-                        files[os.path.join(p, f)] = fo.read()
-                else:
-                    try:
-                        filename = os.path.join(dirpath, f)
+                # A file that cannot be read (permissions, file locked or removed by a sync
+                # tool, dangling symlink, path too long, invalid encoding...) is reported.
+                filename = os.path.join(dirpath, f)
+                try:
+                    if f[-4:] in [".xml", "opml"]:
+                        with open(filename, "rb") as fo:
+                            files[os.path.join(p, f)] = fo.read()
+                    else:
                         with open(filename, 'rt', encoding="utf8") as fo:
                             files[os.path.join(p, f)] = fo.read()
 
-                    except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError) as e:
-                         LOGGER.error("Ignore file " + filename + " because of the error: " + e.reason)
-                         
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + ": " + e.strerror)
-                        errors.append(fo)
-                        filesWithPermissionErrors.append(filename)
+                except (UnicodeDecodeError, OSError) as e:
+                    LOGGER.error("Cannot read file %s: %s", filename, e)
+                    notRead[os.path.join(p, f)] = reason(e)
+                    # Without its folder.txt, nothing in a folder is loaded
+                    if f == "folder.txt" and p:
+                        notRead[p] = reason(e)
+
+        global cache, freshTarget, unreadable
+        errors += list(notRead)
+
+        # If the project folder, its main folders or any of the files at its root could not be
+        # read, the project is not opened: it would be saved without them (an empty project,
+        # or empty plots, world, settings...). Other files that cannot be read are not loaded,
+        # and are left untouched when the project is saved.
+        failed = [p for p in notRead if p in ["", "outline", "characters"] + projectFiles]
+        if failed or (notRead and not files):
+            LOGGER.error("Project %s cannot be loaded: some files cannot be read.", project)
+            showFilesNotLoaded(mw, path, notRead, failed=True)
+            # Nothing of this project must be used by the next save (of another project)
+            cache, freshTarget, unreadable = {}, True, {}
+            errors.append(project)
+            return errors
+
+        if notRead:
+            showFilesNotLoaded(mw, path, notRead)
 
         # Saves to cache (only if we loaded from disk and not zip)
-        global cache, freshTarget
         cache = files
         freshTarget = False
+        unreadable = dict(notRead)
 
         # FIXME: watch directory for changes
 
@@ -1093,16 +1179,29 @@ def loadProject(project, zip=None):
             LOGGER.warning("File %s has not been loaded, it will be left untouched.", f)
             cache.pop(f)
 
-    if len(filesWithPermissionErrors) > 0:
-        dlg = ListDialog(mw)
-        dlg.setModal(True)
-        dlg.setWindowTitle(dlg.tr("Files not loaded"))
-        dlg.label.setText(dlg.tr("The following files were not loaded and appear to be open in another program"))
-        for f in filesWithPermissionErrors:
-            QListWidgetItem(f, dlg.listWidget)
-        dlg.open()
-
     return errors
+
+
+def showFilesNotLoaded(mw, path, notRead, failed=False):
+    """
+    Tells the user which files of the project folder could not be read.
+    @param path: the project folder
+    @param notRead: {relative path: reason}
+    @param failed: True if the project cannot be opened because of them
+    """
+    dlg = ListDialog(mw)
+    dlg.setModal(True)
+    dlg.setWindowTitle(dlg.tr("Files not loaded"))
+    if failed:
+        dlg.label.setText(dlg.tr("The following files could not be read, so the project "
+                                 "cannot be opened:"))
+    else:
+        dlg.label.setText(dlg.tr("The following files could not be read. They are not loaded, "
+                                 "and they are left untouched when the project is saved:"))
+    for f, reason in notRead.items():
+        QListWidgetItem("{} ({})".format(os.path.normpath(os.path.join(path, f)), reason),
+                        dlg.listWidget)
+    dlg.open()
 
 
 def addTextItems(mdl, odict, parent=None):

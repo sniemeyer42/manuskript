@@ -516,3 +516,28 @@ def test_world_item_with_empty_name_keeps_children(sampleProject):
     assert before[-3:] == [(0, ""), (1, "Fire runes"), (1, "Water runes")]
     reload(MW)
     assert world() == before
+
+
+def test_open_project_with_unreadable_files(MW, tmp_path):
+    """Scenes that cannot be read (dangling symlink, permissions) are reported and not
+    loaded, the project opens (#313, #1356). See also test_unreadable_files.py."""
+    path = copySample(tmp_path)
+    folder = path[:-4]
+    try:
+        os.symlink(os.path.join(str(tmp_path), "nonexistent.md"),
+                   os.path.join(folder, "outline", "dangling.md"))
+    except (OSError, NotImplementedError):
+        pass  # symlinks are not available (e.g. Windows without privileges)
+    unreadable = [os.path.join(folder, "outline", "0-Jerusalem", "0-Chapter_1",
+                               "0-Introduction.md")]
+    for f in unreadable:
+        os.chmod(f, 0)
+
+    MW.closeProject()
+    try:
+        MW.loadProject(path)
+        assert MW.currentProject == path
+    finally:
+        for f in unreadable:
+            os.chmod(f, 0o644)
+        MW.closeProject()
