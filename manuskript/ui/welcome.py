@@ -4,6 +4,7 @@
 import locale
 import importlib
 import os
+import shutil
 
 from PyQt5.QtCore import QSettings, QRegExp, Qt, QDir
 from PyQt5.QtGui import QIcon, QBrush, QColor, QStandardItemModel, QStandardItem
@@ -13,7 +14,7 @@ from PyQt5.QtWidgets import QWidget, QAction, QFileDialog, QSpinBox, QLineEdit, 
 from manuskript import loadSave
 from manuskript import settings
 from manuskript.enums import Outline
-from manuskript.functions import mainWindow, iconFromColor, appPath
+from manuskript.functions import mainWindow, iconFromColor, appPath, writablePath, statusMessage
 from manuskript.models.characterModel import characterModel
 from manuskript.models import outlineItem, outlineModel
 from manuskript.models.plotModel import plotModel
@@ -292,8 +293,37 @@ class welcome(QWidget, Ui_welcome):
             self.updateTemplate()
             # Change button text
             self.btnCreate.setText("Open {}".format(name))
-            # Load project
-            self.mw.loadProject(appPath(os.path.join("sample-projects", name)))
+            # Load project: a copy of it, the one that is installed must not be modified
+            # (and it may not be writable, so that changes could not be saved).
+            project = self.copyDemoProject(name)
+            if project:
+                self.appendToRecentFiles(project)
+                self.mw.loadProject(project)
+
+    def copyDemoProject(self, name):
+        """
+        Returns the path to the user's own copy of the demo project `name` (a .msk file
+        in the sample-projects folder), after copying it there if it does not exist yet.
+        Returns None if it cannot be copied.
+        """
+        src = appPath(os.path.join("sample-projects", name))
+        try:
+            dst = os.path.join(writablePath("sample-projects"), name)
+            if not os.path.exists(dst):
+                # Folder first: the project file is only there if the copy is complete.
+                # Only the content is copied, not the permissions: the installed files
+                # may be read-only.
+                for dirpath, dirnames, filenames in os.walk(src[:-4]):
+                    target = os.path.join(dst[:-4], os.path.relpath(dirpath, src[:-4]))
+                    os.makedirs(target, exist_ok=True)
+                    for f in filenames:
+                        shutil.copyfile(os.path.join(dirpath, f), os.path.join(target, f))
+                shutil.copyfile(src, dst)
+        except OSError as e:
+            LOGGER.error("Cannot copy demo project %s: %s", src, e)
+            statusMessage(self.tr("Cannot copy demo project {}.").format(name), importance=3)
+            return None
+        return dst
 
     def updateTemplate(self):
         # Clear layout
