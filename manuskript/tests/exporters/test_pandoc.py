@@ -5,6 +5,7 @@
 
 import shutil
 import subprocess
+import sys
 import types
 
 import pytest
@@ -106,3 +107,65 @@ def test_negativeHeadingShift(pandocSettings):
     spin.setValue(-1)
     assert spin.value() == -1
     assert "--shift-heading-level-by=-1" in w.runnableSettings()
+
+
+@pytest.fixture
+def markTranslations(monkeypatch):
+    """Marks the texts that go through Qt's translation."""
+    from PyQt5.QtWidgets import qApp
+    import manuskript.functions
+    monkeypatch.setattr(manuskript.functions, "translationCache", {})
+    monkeypatch.setattr(qApp, "translate", lambda group, text, *args: "[{}]".format(text))
+
+
+@pytest.fixture
+def customPandoc(MWEmptyProject, monkeypatch, tmp_path):
+    """A pandoc exporter not finding pandoc on PATH. Returns a function
+    setting the custom path to a file with the given content."""
+    from manuskript.exporter.basic import basicExporter
+    from manuskript.exporter.pandoc import pandocExporter
+    from manuskript.exporter.pandoc.abstractPlainText import pandocSettings as PS
+    monkeypatch.setattr(basicExporter, "path", lambda self: None)
+    monkeypatch.setattr(PS, "settingsList", dict(PS.settingsList))
+    E = pandocExporter()
+
+    def setPath(content, executable):
+        path = tmp_path / "pandoc"
+        path.write_text(content)
+        path.chmod(0o755 if executable else 0o644)
+        monkeypatch.setattr(E, "customPath", str(path))
+        return E
+    return setPath
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX permissions")
+def test_customPathNotAProgram(customPandoc, exporterSettingsPath):
+    E = customPandoc("Not pandoc.", executable=False)
+    assert E.isValid() == 0
+    assert E.version() == ""
+    assert E.run(["--version"]) is None
+    # Selecting a pandoc format in the export dialog asks for the version
+    E.getFormatByName("Markdown").settingsWidget()
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX executables")
+def test_customPathCannotRun(customPandoc, MWEmptyProject, monkeypatch, markTranslations):
+    from PyQt5.QtWidgets import qApp, QMessageBox
+    shown = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: shown.append(args))
+    monkeypatch.setattr(MWEmptyProject, "dialog", None, raising=False)
+
+    # Executable without shebang: "Exec format error"
+    E = customPandoc("echo pandoc 3.1\n", executable=True)
+    if E.isValid() != 1:
+        pytest.skip("tmp_path does not allow executables (noexec)")
+    assert E.version() == ""
+    assert E.convert("Text", ["--to=html"]) is None
+    assert len(shown) == 1
+    assert shown[0][2].startswith("[Could not run pandoc (")
+    assert qApp.overrideCursor() is None
+
+    # Program failing
+    E = customPandoc("#!/bin/sh\necho 'pandoc: broken' >&2\nexit 3\n", executable=True)
+    assert E.run(["--version"]) is None
+    assert E.version() == ""

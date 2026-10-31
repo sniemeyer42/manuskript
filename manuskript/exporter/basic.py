@@ -43,7 +43,8 @@ class basicExporter:
     def isValid(self):
         if self.path() != None:
             return 2
-        elif self.customPath and os.path.exists(self.customPath):
+        elif self.customPath and os.path.isfile(self.customPath) and \
+                os.access(self.customPath, os.X_OK):
             return 1
         else:
             return 0
@@ -62,8 +63,22 @@ class basicExporter:
         else:
             LOGGER.error("No command for %s.", self.name)
             return None
-        r = subprocess.check_output([run] + args)  # timeout=.2
-        return r.decode("utf-8")
+
+        try:
+            p = subprocess.run([run] + args, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)  # timeout=.2
+        except OSError as e:
+            LOGGER.error("Could not run %s: %s", run, e)
+            return None
+
+        stderr = p.stderr.decode("utf-8", errors="replace")
+        if p.returncode != 0:
+            LOGGER.error("%s returned %d:\n%s", run, p.returncode, stderr)
+            return None
+        elif stderr:
+            LOGGER.warning("%s:\n%s", run, stderr)
+
+        return p.stdout.decode("utf-8")
 
         # Example of how to run a command
         #
