@@ -191,7 +191,7 @@ class pandocSettings(markdownSettings):
                                       safeTranslate(qApp, "Export", "Use ATX-style headers"), specific=True,
                                       minVersion="1.9", maxVersion="2.11.1"),
         # pandoc v2.11.2+
-        "atx-heading": pandocSetting("--markdown-headings=atx|setext", "checkbox", "markdown asciidoc",
+        "atx-heading": pandocSetting("--markdown-headings=atx", "checkbox", "markdown asciidoc",
                                      safeTranslate(qApp, "Export", "Use ATX-style headers"), specific=True,
                                      minVersion="2.11.2"),
         "self-contained": pandocSetting("--self-contained", "checkbox", "html",

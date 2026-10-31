@@ -73,3 +73,26 @@ def test_duplicateFootnotesExport(MWEmptyProject, exporterSettingsPath, monkeypa
     r = F.output(F.settingsWidget())
     assert r is not None
     assert "Scene 1." in r and "Scene 2." in r
+
+
+@pytest.fixture
+def pandocSettings(MWEmptyProject, monkeypatch):
+    """Returns a function creating the pandoc settings widget for a given
+    pandoc version and output format."""
+    from manuskript.exporter.pandoc import pandocExporter
+    from manuskript.exporter.pandoc.abstractPlainText import pandocSettings as PS
+    # The widget drops the settings unknown to the pandoc version from the
+    # class level dict, keep that local to the test.
+    monkeypatch.setattr(PS, "settingsList", dict(PS.settingsList))
+
+    def make(major, minor, name="Markdown"):
+        F = pandocExporter().getFormatByName(name)
+        return PS(F, major, minor, toFormat=F.toFormat)
+    return make
+
+
+def test_atxHeadingsArgument(pandocSettings):
+    w = pandocSettings("3", "1")
+    w.settingsList["atx-heading"].widget.setChecked(True)
+    args = w.runnableSettings()
+    assert "--markdown-headings=atx" in args
