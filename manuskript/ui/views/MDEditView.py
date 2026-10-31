@@ -359,36 +359,74 @@ class MDEditView(textEditView):
 
     def clearedFormat(self, text):
         # FIXME: clear also block formats
-        for reg, rep, flags in [
-            (r"\*\*(.*?)\*\*", "\\1", None), # bold
-            ("__(.*?)__", "\\1", None), # bold
-            (r"\*(.*?)\*", "\\1", None), # emphasis
-            ("_(.*?)_", "\\1", None), # emphasis
-            ("`(.*?)`", "\\1", None), # verbatim
-            ("~~(.*?)~~", "\\1", None), # strike
-            (r"\^(.*?)\^", "\\1", None), # superscript
-            ("~(.*?)~", "\\1", None), # subscript
-            (r"<!--\s*(.*?)\s*-->", "\\1", re.S), # comments
+        # Selected text separates paragraphs with U+2029
+        text = text.replace("\u2029", "\n")
+        # Comments can span several lines
+        text = re.sub(r"<!--\s*(.*?)\s*-->", "\\1", text, flags=re.S)
+
+        quoteRegex = r"[ \t]*(>[ \t]*)+"
+        ruleRegex = r"[ \t]*([-*_])([ \t]*\1){2,}[ \t]*$"
+        bulletRegex = r"[ \t]*[-+*][ \t]+(?=\S)"
+        numberRegex = r"[ \t]*([0-9]+|[a-z])[.)][ \t]+(?=\S)"
+        lines = text.split("\n")
+        numbered = [re.match(numberRegex, re.sub("^" + quoteRegex, "", l))
+                    is not None for l in lines]
+
+        def isText(i):
+            """Is the i-th line a paragraph of text?"""
+            return i >= 0 and lines[i].strip() and \
+                not re.match(ruleRegex, lines[i]) and \
+                not re.match(r"[ \t]*(#|>|```|~~~|"
+                             r"([-+*]|[0-9a-z]+[.)])([ \t]|$))", lines[i])
+
+        cleared = []
+        for i, line in enumerate(lines):
+            # Below a line of text, "===" or "---" makes it a Setext heading
+            # ("===" at the start of the selection too, it is nothing else).
+            if re.match(r"(={3,}|-{3,})[ \t]*$", line) and \
+               (isText(i - 1) or (i == 0 and line[0] == "=")):
+                continue
+            # Horizontal rules (e.g. scene breaks) are kept as they are
+            if re.match(ruleRegex, line):
+                cleared.append(line.strip())
+                continue
+            if re.match(r"[ \t]*`+[ \t]*$", line):
+                continue # Code block fence
+
+            for reg, rep in [
+                (r"\*\*(.*?)\*\*", "\\1"), # bold
+                ("__(.*?)__", "\\1"), # bold
+                (r"\*(.*?)\*", "\\1"), # emphasis
+                ("_(.*?)_", "\\1"), # emphasis
+                ("`(.*?)`", "\\1"), # verbatim
+                ("~~(.*?)~~", "\\1"), # strike
+                (r"\^(.*?)\^", "\\1"), # superscript
+                ("~(.*?)~", "\\1"), # subscript
+                ]:
+                line = re.sub(reg, rep, line)
 
             # LINES OR BLOCKS
-            (r"^#*\s*(.+?)\s*", "\\1", re.M), # ATX
-            (r"^[=-]*$", "", re.M), # Setext
-            (r"^`*$", "", re.M), # Code block fenced
-            (r"^\s*[-+*]\s*(.*?)\s*$", "\\1", re.M), # Bullet List
-            (r"^\s*[0-9a-z](\.|\))\s*(.*?)\s*$", "\\2", re.M), # Bullet List
-            (r"\s*[>\s]*(.*?)\s*$", "\\1", re.M), # Code block and blockquote
-
-            ]:
-            text = re.sub(reg, rep, text, flags if flags else 0)
-        return text
+            line = re.sub("^" + quoteRegex, "", line) # blockquote
+            line = re.sub(r"^[ \t]*#+[ \t]*(.*?)([ \t]+#+)?[ \t]*$", "\\1",
+                          line) # ATX
+            line = re.sub("^" + bulletRegex, "", line) # bullet list
+            # Numbered list. Numbers of several digits only in a list (from
+            # item 10 on): a paragraph can start with a year, e.g. "1984. ".
+            match = re.match(numberRegex, line)
+            if match and (len(match.group(1)) == 1 or
+                          (i > 0 and numbered[i - 1]) or
+                          (i + 1 < len(lines) and numbered[i + 1])):
+                line = line[match.end():]
+            cleared.append(line.strip()) # also indented code block
+        return "\n".join(cleared)
 
     def clearedFormatForStats(self, text):
         # Remove stuff that musn't be counted
         # FIXME: clear also block formats
         for reg, rep, flags in [
-            ("<!--.*-->", "", re.S), # comments
+            ("<!--.*?-->", "", re.S), # comments
             ]:
-            text = re.sub(reg, rep, text, flags if flags else 0)
+            text = re.sub(reg, rep, text, flags=flags)
         return text
 
     def titleSetext(self, level):

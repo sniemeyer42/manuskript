@@ -542,3 +542,70 @@ def test_mainWindow_closeSubmitsPendingText(MWEmptyProject, textItem,
     assert asked == [(True, "Some text. More")]
     assert MW.currentProject
     ed.close()
+
+
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.parametrize("text, cleared", [
+    ("I am here", "I am here"),  # Not "Iam here"
+    ("A cat sat.", "A cat sat."),
+    ("a  b", "a  b"),
+    ("# Title", "Title"),
+    ("## Title ##", "Title"),
+    ("# C#", "C#"),
+    ("- item", "item"),
+    ("  * nested item", "nested item"),
+    ("-5 degrees", "-5 degrees"),
+    ("1. first", "first"),
+    ("10. tenth", "10. tenth"),  # Several digits: only in a list,
+    ("1984. That was the year.", "1984. That was the year."),
+    ("1. ", "1."),  # only items with text
+    ("a) alpha", "alpha"),
+    ("e.g. this", "e.g. this"),
+    ("> > nested", "nested"),
+    ("**bold** and *it*", "bold and it"),
+    ("<!-- comment -->", "comment"),
+    ("===", ""),
+    ("---", "---"),  # A horizontal rule (e.g. a scene break)
+    ("* * *", "* * *"),
+    ("    code  ", "code"),
+    # Selected text (paragraphs separated by U+2029)
+    ("# Title - one - two > q", "Title\none\ntwo\nq"),
+    ("x # H y z", "x\nH\ny z"),
+    ("1. first 2. second", "first\nsecond"),
+    ("9. ninth 10. tenth", "ninth\ntenth"),
+    ("10. tenth 11. eleventh", "tenth\neleventh"),
+    ("Text 1984. That was the year.", "Text\n1984. That was the year."),
+    ("Title ===== Text", "Title\nText"),
+    ("Title ----- Text", "Title\nText"),
+    ("Scene one.  ---  Scene two.",
+     "Scene one.\n\n---\n\nScene two."),
+    ("Scene one.  * * *  Scene two.",
+     "Scene one.\n\n* * *\n\nScene two."),
+    ("# Title ---", "Title\n---"),
+    ("He said: - x", "He said:\n-\nx"),
+    ("``` code ```", "code"),
+    ("<!-- a b -->", "a\nb"),
+])
+def test_MDEditView_clearedFormat(text, cleared):
+    assert MDEditView.clearedFormat(None, text) == cleared
+
+
+def test_MDEditView_clearFormat():
+    """
+    Format > Clear formatting clears the selected paragraphs, or the
+    current one.
+    """
+    ed = MDEditView(None)
+    ed.setPlainText("I am here\n# Title\n- one\n> two")
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.Start)
+    ed.setTextCursor(cursor)
+    ed.clearFormat()
+    assert ed.toPlainText() == "I am here\n# Title\n- one\n> two"
+    cursor.movePosition(QTextCursor.NextBlock)
+    ed.setTextCursor(cursor)
+    ed.clearFormat()
+    assert ed.toPlainText() == "I am here\nTitle\n- one\n> two"
+    ed.selectAll()
+    ed.clearFormat()
+    assert ed.toPlainText() == "I am here\nTitle\none\ntwo"
