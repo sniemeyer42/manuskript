@@ -10,6 +10,10 @@ from manuskript.ui.tools.frequency_ui import Ui_FrequencyAnalyzer
 import re
 from collections import Counter
 
+# A word, with apostrophes (' or the typographic ’) only inside: "couldn’t"
+# is one word (#997), and quotes around dialogue (‘…’) are left out.
+WORD = re.compile(r"\w+(?:['\u2019]+\w+)*")
+
 class frequencyAnalyzer(QWidget, Ui_FrequencyAnalyzer):
     def __init__(self, mainWindow):
         QWidget.__init__(self)
@@ -46,7 +50,7 @@ class frequencyAnalyzer(QWidget, Ui_FrequencyAnalyzer):
             txt = item.text()
 
             # Split into words
-            lst = re.findall(r"[\w']+", txt)            # Ignores punctuation
+            lst = WORD.findall(txt)                     # Ignores punctuation
             # lst = re.findall(r"[\w']+|[.,!?;]", txt)  # Includes punctuation
             phrases = []
 
@@ -86,7 +90,7 @@ class frequencyAnalyzer(QWidget, Ui_FrequencyAnalyzer):
         def listWords(item):
             txt = item.text()
 
-            lst = re.findall(r"[\w']+", txt)
+            lst = WORD.findall(txt)
             for c in item.children():
                 lst += listWords(c)
 
