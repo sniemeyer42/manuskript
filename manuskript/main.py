@@ -7,11 +7,11 @@ import sys
 import signal
 
 import manuskript.logging
-from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt
+from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt, QLibraryInfo
 from PyQt5.QtGui import QIcon, QColor, QPalette
 from PyQt5.QtWidgets import QApplication, qApp, QStyleFactory
 
-from manuskript.functions import appPath, writablePath, resetTranslation
+from manuskript.functions import appPath, writablePath, resetTranslation, translationLocale
 from manuskript.version import getVersion
 
 try:
@@ -31,6 +31,36 @@ def translationFileName(languageCode):
     if lc.startswith("zh") and QLocale(lc).script() == QLocale.TraditionalChineseScript:
         lc = "zh_HANT"
     return "manuskript_{}.qm".format(lc)
+
+def loadQtTranslation(app, translation, catalogue):
+    """Installs Qt's own translation (standard buttons, file and color dialogs,
+    context menus...) matching the manuskript translation file `translation`,
+    loaded in the QTranslator `catalogue`.
+    Returns the translator, or None if there is none."""
+    # Builtin English, or a catalogue without any translated message (the UI
+    # is in English then): keep Qt's strings in English as well.
+    if not translation or catalogue.isEmpty():
+        return None
+    locale = translationLocale(translation)
+    if locale.language() == QLocale.C:
+        return None
+
+    translator = QTranslator(app)
+    for directory in [QLibraryInfo.location(QLibraryInfo.TranslationsPath),
+                      appPath("i18n")]:
+        if translator.load(locale, "qtbase", "_", directory):
+            # Installing a translator makes Qt take the layout direction from
+            # the translation of QT_LAYOUT_DIRECTION, which is right-to-left
+            # in qtbase_ar/fa/he.qm. Keep the direction that the manuskript
+            # catalogue gave: it is the one that translates Manuskript's UI.
+            direction = app.layoutDirection()
+            app.installTranslator(translator)
+            app.setLayoutDirection(direction)
+            LOGGER.info("Loaded Qt translation for {} from {}".format(locale.name(), directory))
+            return translator
+
+    LOGGER.info("No Qt translation found for {}.".format(locale.name()))
+    return None
 
 def prepare(arguments, tests=False):
     # Qt WebEngine demands this attribute be set _before_ we create our QApplication object.
@@ -137,6 +167,7 @@ def prepare(arguments, tests=False):
 
     LOGGER.info("Preferred translation: {} (based on {})".format(("builtin" if translation == "" else translation), source))
     activateTranslation(translation, source)
+    loadQtTranslation(app, app.property("manuskriptTranslation"), appTranslator)
 
     def respectSystemDarkThemeSetting():
         """Adjusts the Qt theme to match the OS 'dark theme' setting configured by the user."""
