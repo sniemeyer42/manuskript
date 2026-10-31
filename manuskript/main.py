@@ -108,6 +108,9 @@ def prepare(arguments, tests=False):
     style = selectStyle(arguments, settings)
     if style:
         app.setStyle(style)
+    # Remember the style's name: with custom tooltip colours (an application
+    # style sheet), qApp.style() is a wrapper without a name.
+    app.setProperty("manuskriptStyle", app.style().objectName())
 
     # Translation process
     appTranslator = QTranslator(app)
@@ -226,9 +229,8 @@ def prepare(arguments, tests=False):
 
     respectSystemDarkThemeSetting()
 
-    # Apply configurable tooltip styling
-    from manuskript import settings as manuskript_settings
-    manuskript_settings.applyTooltipStyle()
+    # Note: the configurable tooltip styling is stored in the project settings,
+    # it is applied when a project is loaded (see MainWindow.loadProject).
 
     QIcon.setThemeSearchPaths(QIcon.themeSearchPaths() + [appPath("icons")])
     QIcon.setThemeName("NumixMsk")

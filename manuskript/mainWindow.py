@@ -949,6 +949,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.toggleSpellcheck(settings.spellcheck)
         self.updateMenuDict()
         self.setDictionary()
+        settings.applyTooltipStyle()
 
         iconSize = settings.viewSettings["Tree"]["iconSize"]
         self.treeRedacOutline.setIconSize(QSize(iconSize, iconSize))

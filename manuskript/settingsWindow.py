@@ -87,8 +87,11 @@ class settingsWindow(QWidget, Ui_Settings):
         # General
         self.cmbStyle.addItems(list(QStyleFactory.keys()))
 
+        # With custom tooltip colours (an application style sheet), the
+        # active style has no name: use the one remembered when it was set.
+        style = qApp.style().objectName() or qApp.property("manuskriptStyle")
         try:
-            self.cmbStyle.setCurrentIndex(lowerKeys.index(qApp.style().objectName()))
+            self.cmbStyle.setCurrentIndex(lowerKeys.index(style))
         except ValueError:
             self.cmbStyle.setCurrentIndex(0)
 
@@ -361,7 +364,9 @@ class settingsWindow(QWidget, Ui_Settings):
         # Save style to Qt Settings
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
         sttgs.setValue("applicationStyle", style)
-        qApp.setStyle(style)
+        newStyle = qApp.setStyle(style)
+        if newStyle:
+            qApp.setProperty("manuskriptStyle", newStyle.objectName())
 
     def setTranslation(self, index):
         path = self.cmbTranslation.itemData(index)
@@ -1092,8 +1097,4 @@ class settingsWindow(QWidget, Ui_Settings):
 
     def updateTooltipStyle(self):
         # Apply the new tooltip style immediately
-        if settings.tooltipStyle["useSystemDefaultsForTooltips"]:
-            # Clear any custom tooltip styling to use system defaults
-            qApp.setStyleSheet("")
-        else:
-            qApp.setStyleSheet(f"QToolTip {{ color: {settings.tooltipStyle['textColor']}; background-color: {settings.tooltipStyle['backgroundColor']}; border: 1px solid {settings.tooltipStyle['borderColor']}; }}")
+        settings.applyTooltipStyle()
