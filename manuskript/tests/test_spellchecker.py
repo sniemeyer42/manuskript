@@ -15,6 +15,32 @@ from manuskript.functions import spellchecker as S
 from manuskript.functions.spellchecker import BasicDictionary
 
 
+class FakeDictionary(BasicDictionary):
+    """Dictionary with a fixed list of known words."""
+    def __init__(self, words=("the", "a", "is", "dog", "dogs", "bones",
+                              "said", "hello", "world", "to", "me", "isn't",
+                              "it", "true")):
+        self._lang = "fake"
+        self._customDict = set()
+        self._words = set(words)
+
+    def isMisspelled(self, word):
+        return word.lower() not in self._words
+
+    def getSuggestions(self, word):
+        return ["the"]
+
+    def _saveCustomDict(self):
+        pass
+
+
+def underlinedWords(editor):
+    block = editor.document().firstBlock()
+    text = block.text()
+    return [text[r.start:r.start + r.length] for r in block.layout().formats()
+            if r.format.underlineStyle() != 0]
+
+
 @pytest.fixture
 def resources(monkeypatch, tmp_path):
     """Keeps custom dictionaries and caches out of the user's data folder,
@@ -376,3 +402,34 @@ def test_defaultDictionaryFallsBackToNextLibrary(monkeypatch, fakeSymspell):
                         [S.EnchantDictionary, S.SymSpellDictionary])
     assert S.Spellchecker.getDefaultDictionary() == "symspellpy:en"
     assert S.Spellchecker.getDictionary(None) is not None
+
+
+###############################################################################
+# Editor
+###############################################################################
+
+def test_setDictEnablesSpellcheckAgain(monkeypatch):
+    from manuskript import settings
+    from manuskript.ui.views.textEditView import textEditView
+
+    fake = FakeDictionary()
+    monkeypatch.setattr(settings, "spellcheck", True)
+    monkeypatch.setattr(S.Spellchecker, "getDictionary", staticmethod(
+        lambda name: fake if name == "Fake:good" else None))
+
+    # The project dictionary is not installed: spellcheck is switched off
+    editor = textEditView(spellcheck=True, highlighting=True, dict="Fake:missing")
+    assert not editor.spellcheck
+
+    # The user picks an installed one in Tools > Dictionary
+    editor.setDict("Fake:good")
+    assert editor.spellcheck
+    editor.setPlainText("the dgo is a dog\n")
+    editor.highlighter.rehighlight()
+    assert underlinedWords(editor) == ["dgo"]
+
+    # But it stays off if the user disabled spellcheck
+    monkeypatch.setattr(settings, "spellcheck", False)
+    editor = textEditView(spellcheck=False, highlighting=True, dict="Fake:good")
+    editor.setDict("Fake:good")
+    assert not editor.spellcheck
