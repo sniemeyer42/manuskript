@@ -113,14 +113,19 @@ class settingsWindow(QWidget, Ui_Settings):
             self.cmbTranslation.addItem(name, tr[name])
 
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
-        if (sttgs.contains("applicationTranslation")
-            and sttgs.value("applicationTranslation") in tr.values()):
+        if sttgs.contains("applicationTranslation"):
+            translation = sttgs.value("applicationTranslation")
+        else:
+            # No language chosen yet: show the one detected at startup (#1220)
+            translation = qApp.property("manuskriptTranslation")
+        if translation in tr.values():
             # Sets the correct translation
             self.cmbTranslation.setCurrentText(
-                [i for i in tr
-                 if tr[i] == sttgs.value("applicationTranslation")][0])
+                [i for i in tr if tr[i] == translation][0])
 
-        self.cmbTranslation.currentIndexChanged.connect(self.setTranslation)
+        # 'activated' is also emitted when the current entry is chosen again
+        self._restartNoticeShown = False
+        self.cmbTranslation.activated.connect(self.setTranslation)
 
         f = qApp.font()
         self.spnGeneralFontSize.setValue(f.pointSize())
@@ -355,12 +360,19 @@ class settingsWindow(QWidget, Ui_Settings):
         qApp.setStyle(style)
 
     def setTranslation(self, index):
-        path = self.cmbTranslation.currentData()
+        path = self.cmbTranslation.itemData(index)
         # Save settings
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
         sttgs.setValue("applicationTranslation", path)
 
-        # QMessageBox.information(self, "Warning", "You'll have to restart manuskript.")
+        # Only once: the arrow keys and the mouse wheel 'activate' each
+        # language on the way.
+        if (path != qApp.property("manuskriptTranslation")
+                and not self._restartNoticeShown):
+            self._restartNoticeShown = True
+            QMessageBox.information(
+                self, self.tr("Language changed"),
+                self.tr("Restart Manuskript to use the new language."))
 
     def setAppFontSize(self, val):
         """
