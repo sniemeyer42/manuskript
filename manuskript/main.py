@@ -7,7 +7,7 @@ import sys
 import signal
 
 import manuskript.logging
-from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt
+from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt, QTimer
 from PyQt5.QtGui import QIcon, QColor, QPalette
 from PyQt5.QtWidgets import QApplication, qApp, QStyleFactory
 
@@ -259,7 +259,14 @@ def sigint_handler(sig, MW):
     def handler(*args):
         # Log before winding down to preserve order of cause and effect.
         LOGGER.info(f'{sig} received. Quitting...')
-        MW.close()
+        # close() also returns True, without doing anything, while the window
+        # is already being closed, e.g. while it asks whether to save the
+        # project. Quitting then would dismiss that question like "Discard",
+        # so only quit once the window is really closed.
+        if MW.close() and not MW.isVisible():
+            # Quit even if other windows or dialogs are still open. Queued,
+            # so that it also works if the event loop has not started yet.
+            QTimer.singleShot(0, qApp.quit)
         print(f'{sig} received, quit.')
 
     return handler
@@ -268,6 +275,13 @@ def sigint_handler(sig, MW):
 def setup_signal_handlers(MW):
     signal.signal(signal.SIGINT, sigint_handler("SIGINT", MW))
     signal.signal(signal.SIGTERM, sigint_handler("SIGTERM", MW))
+
+    # Python only runs signal handlers when the interpreter executes code,
+    # which never happens while Qt's event loop is idle. Run some Python code
+    # regularly, so that the handlers above are called within half a second.
+    MW._signalTimer = QTimer(MW)
+    MW._signalTimer.timeout.connect(lambda: None)
+    MW._signalTimer.start(500)
 
 
 def is_valid_project(parser, arg):
