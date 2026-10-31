@@ -69,3 +69,13 @@ def reload(MW):
     MW.loadProject(path)
     assert MW.currentProject == path
     return before, tree(MW)
+
+
+def shownDialogs(monkeypatch):
+    """Records the ListDialogs that are shown, as (title, label, [items])."""
+    from manuskript.ui.listDialog import ListDialog
+    shown = []
+    monkeypatch.setattr(ListDialog, "open", lambda self: shown.append((
+        self.windowTitle(), self.label.text(),
+        [self.listWidget.item(i).text() for i in range(self.listWidget.count())])))
+    return shown

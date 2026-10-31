@@ -178,6 +178,8 @@ class welcome(QWidget, Ui_welcome):
             self.setLastAccessedDirectory(os.path.dirname(filename))
             if filename[-4:] != ".msk":
                 filename += ".msk"
+            if not settings.saveToZip and not self.checkProjectFolder(filename):
+                return
             self.appendToRecentFiles(filename)
             loadSave.clearSaveCache()  # Ensure all file(s) are saved under new filename
             self.mw.saveDatas(filename)
@@ -203,6 +205,8 @@ class welcome(QWidget, Ui_welcome):
             self.setLastAccessedDirectory(os.path.dirname(filename))
             if filename[-4:] != ".msk":
                 filename += ".msk"
+            if not self.checkProjectFolder(filename):
+                return
             if os.path.exists(filename) and not overwrite:
                 # Check if okay to overwrite existing project
                 result = QMessageBox.warning(self, self.tr("Warning"),
@@ -214,6 +218,27 @@ class welcome(QWidget, Ui_welcome):
             self.appendToRecentFiles(filename)
             self.loadDefaultDatas()
             self.mw.loadProject(filename, loadFromFile=False)
+
+    def checkProjectFolder(self, filename):
+        """
+        A project saved in folders is stored in a folder named like the project file,
+        next to it. Returns False, after warning the user, if such a folder already exists
+        and is not a Manuskript project: the project cannot be saved there.
+        """
+        folder = os.path.splitext(filename)[0]
+        try:
+            # Hidden files (.DS_Store...) do not count
+            notEmpty = os.path.isdir(folder) and [f for f in os.listdir(folder) if f[:1] != "."]
+        except OSError as e:
+            LOGGER.error("Cannot read folder %s: %s", folder, e)
+            notEmpty = True
+        if notEmpty and not os.path.isfile(os.path.join(folder, "MANUSKRIPT")):
+            QMessageBox.warning(self, self.tr("Warning"),
+                self.tr("The folder {} already exists and is not a Manuskript project. "
+                        "Manuskript stores the project in a folder with this name, "
+                        "please choose another name.").format(folder))
+            return False
+        return True
 
     ###############################################################################
     # TEMPLATES

@@ -41,6 +41,12 @@ except:
 
 cache = {}
 
+# True when the cache does not describe the project folder on disk (new project, "Save as...",
+# project loaded from a single file): the next save in folder mode writes the whole project,
+# after removing what an older project in that folder might have left. A project loaded from
+# its folder is never a fresh target, even if nothing could be loaded from it.
+freshTarget = True
+
 # Files that saveProject() writes at the root of a project folder (besides the
 # "outline" and "characters" folders).
 projectFiles = ["MANUSKRIPT", "infos.txt", "summary.txt", "labels.txt", "status.txt",
@@ -346,10 +352,43 @@ def saveProject(zip=None):
         # Debug
         LOGGER.debug("Saving to folder %s", folder)
 
-        # If cache is empty (meaning we haven't loaded from disk), we wipe folder, just to be sure.
-        if not cache:
-            if os.path.exists(os.path.join(dir, folder)):
-                shutil.rmtree(os.path.join(dir, folder))
+        # If the project has not been loaded from this folder (new project, "Save as..."),
+        # we remove what an older project in that folder might have left, just to be sure.
+        # Only if the folder is a Manuskript project, and only the files Manuskript writes:
+        # never wipe a folder of the user that happens to have the project's name.
+        global freshTarget
+        if freshTarget:
+            target = os.path.join(dir, folder)
+            try:
+                # Hidden files (.DS_Store...) do not count
+                notEmpty = os.path.isdir(target) and \
+                    [f for f in os.listdir(target) if f[:1] != "."]
+            except OSError:
+                notEmpty = True
+            if notEmpty:
+                if not os.path.isfile(os.path.join(target, "MANUSKRIPT")):
+                    LOGGER.error("Cannot save project: the folder %s already exists and is not "
+                                 "a Manuskript project.", target)
+                    dlg = ListDialog(mw)
+                    dlg.setModal(True)
+                    dlg.setWindowTitle(dlg.tr("Project not saved"))
+                    dlg.label.setText(dlg.tr(
+                        "The project is saved in a folder named like the project file. This folder "
+                        "already exists and is not a Manuskript project, so the project cannot be "
+                        "saved there. Use \"Save as...\" to save it under another name."))
+                    QListWidgetItem(target, dlg.listWidget)
+                    dlg.open()
+                    return False
+
+                for sub in ["outline", "characters"]:
+                    if os.path.isdir(os.path.join(target, sub)):
+                        shutil.rmtree(os.path.join(target, sub))
+                for f in projectFiles:
+                    if os.path.isfile(os.path.join(target, f)):
+                        os.remove(os.path.join(target, f))
+
+            # From now on, the cache describes what is in the folder.
+            freshTarget = False
 
         # Renamed / moved items are NOT moved on disk. Their new path is not in the cache,
         # so they are written below, and their old file is then removed as a phantom.
@@ -724,8 +763,9 @@ def loadProject(project, zip=None):
                         filesWithPermissionErrors.append(filename)
 
         # Saves to cache (only if we loaded from disk and not zip)
-        global cache
+        global cache, freshTarget
         cache = files
+        freshTarget = False
 
         # FIXME: watch directory for changes
 
