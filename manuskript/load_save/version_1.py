@@ -41,6 +41,11 @@ except:
 
 cache = {}
 
+# Files that saveProject() writes at the root of a project folder (besides the
+# "outline" and "characters" folders).
+projectFiles = ["MANUSKRIPT", "infos.txt", "summary.txt", "labels.txt", "status.txt",
+                "settings.txt", "plots.xml", "world.opml", "revisions.xml"]
+
 
 characterMap = OrderedDict([
     (Character.name, "Name"),
@@ -942,6 +947,25 @@ def loadProject(project, zip=None):
 
     # Check IDS
     mdl.rootItem.checkIDs()
+
+    if not zip:
+        # saveProject() removes every cached file that it has not written, as the file of a
+        # removed item. Files that have not been loaded into the project (unknown files,
+        # scenes without ID, folders without folder.txt, ...) must therefore not be in the
+        # cache, otherwise they are deleted on the next save. They are left untouched.
+        used = set(projectFiles)
+        used.update(c.lastPath for c in mw.mdlCharacter.characters)
+
+        def addUsed(item):
+            for c in item.children():
+                used.add(c._lastPath)
+                used.add(os.path.join(c._lastPath, "folder.txt"))
+                addUsed(c)
+
+        addUsed(mdl.rootItem)
+        for f in [f for f in cache if f not in used]:
+            LOGGER.warning("File %s has not been loaded, it will be left untouched.", f)
+            cache.pop(f)
 
     if len(filesWithPermissionErrors) > 0:
         dlg = ListDialog(mw)
