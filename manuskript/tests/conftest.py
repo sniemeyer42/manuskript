@@ -66,6 +66,7 @@ def MWSampleProject(MW):
     import shutil
     shutil.copyfile(src, tf.name)
     shutil.copytree(src[:-4], tf.name[:-4])
+    MW.closeProject()
     MW.loadProject(tf.name)
     assert MW.currentProject != None
 
