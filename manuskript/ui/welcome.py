@@ -112,17 +112,38 @@ class welcome(QWidget, Ui_welcome):
     # RECENTS
     ###############################################################################
 
+    @staticmethod
+    def recentFileKey(path):
+        """Returns a key to compare recent files, so that the same project
+        reached through a symbolic link, with other slashes or another case
+        (Windows) is recognized (#1228)."""
+        return os.path.normcase(os.path.realpath(path))
+
     def loadRecents(self):
         sttgns = QSettings()
         self.mw.menuRecents.setIcon(QIcon.fromTheme("folder-recent"))
         if sttgns.contains("recentFiles"):
             lst = sttgns.value("recentFiles")
             self.mw.menuRecents.clear()
-            for f in [f for f in lst if os.path.exists(f)]:
-                name = os.path.split(f)[1]
+            self.mw.menuRecents.setToolTipsVisible(True)
+
+            # Existing projects, each one only once
+            files = []
+            keys = set()
+            for f in lst:
+                if os.path.exists(f) and self.recentFileKey(f) not in keys:
+                    keys.add(self.recentFileKey(f))
+                    files.append(f)
+
+            names = [os.path.split(f)[1] for f in files]
+            for f, name in zip(files, names):
+                if names.count(name) > 1:
+                    # Tell apart projects with the same file name
+                    name = "{} - {}".format(name, os.path.dirname(f))
                 a = QAction(name, self)
                 a.setData(f)
                 a.setStatusTip(f)
+                a.setToolTip(f)
                 a.triggered.connect(self.loadRecentFile)
                 self.mw.menuRecents.addAction(a)
 
@@ -135,8 +156,9 @@ class welcome(QWidget, Ui_welcome):
         else:
             recentFiles = []
 
-        while project in recentFiles:
-            recentFiles.remove(project)
+        project = os.path.normpath(os.path.abspath(project))
+        key = self.recentFileKey(project)
+        recentFiles = [f for f in recentFiles if self.recentFileKey(f) != key]
         recentFiles.insert(0, project)
         recentFiles = recentFiles[:10]
         sttgns.setValue("recentFiles", recentFiles)
