@@ -383,8 +383,10 @@ class textEditView(QTextEdit):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
-            text = QApplication.clipboard().text()
-            self.insertPlainText(text)
+            # insertPlainText() would also insert into read-only editors
+            if not self.isReadOnly():
+                text = QApplication.clipboard().text()
+                self.insertPlainText(text)
         else:
             QTextEdit.keyPressEvent(self, event)
 

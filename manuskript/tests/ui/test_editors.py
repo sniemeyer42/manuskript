@@ -609,3 +609,21 @@ def test_MDEditView_clearFormat():
     ed.selectAll()
     ed.clearFormat()
     assert ed.toPlainText() == "I am here\nTitle\none\ntwo"
+
+
+def test_textEditView_pasteHonoursReadOnly():
+    """
+    Ctrl+V does not paste into read-only editors (e.g. the "previous
+    step" fields of the summary tab, which are bound to the model).
+    """
+    from PyQt5.QtCore import Qt
+    qApp.clipboard().setText("Pasted")
+    ed = textEditView(None)
+    ed.setEnabled(True)  # Disabled until an index is set
+    ed.setPlainText("Text")
+    ed.setReadOnly(True)
+    QTest.keyClick(ed, Qt.Key_V, Qt.ControlModifier)
+    assert ed.toPlainText() == "Text"
+    ed.setReadOnly(False)
+    QTest.keyClick(ed, Qt.Key_V, Qt.ControlModifier)
+    assert ed.toPlainText() == "PastedText"
