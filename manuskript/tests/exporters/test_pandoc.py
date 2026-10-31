@@ -96,3 +96,13 @@ def test_atxHeadingsArgument(pandocSettings):
     w.settingsList["atx-heading"].widget.setChecked(True)
     args = w.runnableSettings()
     assert "--markdown-headings=atx" in args
+
+
+def test_negativeHeadingShift(pandocSettings):
+    """Book/Chapter/Scene outlines need chapters promoted to level 1."""
+    w = pandocSettings("3", "1")
+    spin = w.settingsList["shift-heading"].widget
+    assert spin.minimum() < 0
+    spin.setValue(-1)
+    assert spin.value() == -1
+    assert "--shift-heading-level-by=-1" in w.runnableSettings()
