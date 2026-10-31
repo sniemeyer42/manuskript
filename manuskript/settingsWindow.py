@@ -92,7 +92,11 @@ class settingsWindow(QWidget, Ui_Settings):
         except ValueError:
             self.cmbStyle.setCurrentIndex(0)
 
-        self.cmbStyle.currentIndexChanged[str].connect(self.setStyle)
+        # 'activated' is also emitted when the current entry is chosen again:
+        # with --style, the entry shown is the session's style, not the
+        # saved one.
+        self.cmbStyle.activated.connect(
+            lambda i: self.setStyle(self.cmbStyle.itemText(i)))
 
         self.cmbTranslation.clear()
         tr = OrderedDict()

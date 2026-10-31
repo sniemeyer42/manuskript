@@ -97,3 +97,73 @@ def test_loadQtTranslationKeepsLayoutDirection(translation, keepLayoutDirection)
         assert qApp.layoutDirection() == Qt.LeftToRight
     finally:
         qApp.removeTranslator(translator)
+
+
+@pytest.mark.parametrize("argv, style", [
+    ([], None),
+    (["--style", "Fusion"], "Fusion"),
+    (["--style=Windows"], "Windows"),
+    (["-style", "Fusion"], "Fusion"),  # Qt's own syntax
+])
+def test_styleArgument(argv, style):
+    assert main.process_commandline(argv).style == style
+
+
+class fakeSettings(dict):
+    def contains(self, key):
+        return key in self
+
+    def value(self, key):
+        return self[key]
+
+
+def test_selectStyle(monkeypatch):
+    """--style takes precedence over the saved style (#467)."""
+    saved = fakeSettings(applicationStyle="Saved")
+    noArgs = main.process_commandline([])
+    styleArg = main.process_commandline(["--style", "Argument"])
+
+    monkeypatch.delenv("QT_STYLE_OVERRIDE", raising=False)
+    assert main.selectStyle(noArgs, fakeSettings()) is None
+    assert main.selectStyle(noArgs, saved) == "Saved"
+    assert main.selectStyle(styleArg, saved) == "Argument"
+
+    # Many desktops set QT_STYLE_OVERRIDE for all applications: it must not
+    # replace the style chosen in the settings, nor the default (Fusion).
+    monkeypatch.setenv("QT_STYLE_OVERRIDE", "Environment")
+    assert main.selectStyle(noArgs, fakeSettings()) is None
+    assert main.selectStyle(noArgs, saved) == "Saved"
+    assert main.selectStyle(styleArg, saved) == "Argument"
+
+
+def test_chooseSessionStyleInSettings(MWSampleProject):
+    """
+    Started with --style, Settings show the style of the session. Choosing
+    it there saves it, although it is already the current entry (#467).
+    """
+    from PyQt5.QtCore import QSettings
+    from PyQt5.QtWidgets import qApp, QStyleFactory
+    from manuskript.settingsWindow import settingsWindow
+
+    style = qApp.style().objectName()
+    assert style in [k.lower() for k in QStyleFactory.keys()]
+    others = [k for k in QStyleFactory.keys() if k.lower() != style]
+    if not others:
+        pytest.skip("Only one Qt style is available")
+    qS = QSettings(qApp.organizationName(), qApp.applicationName())
+    oldStyle = qS.value("applicationStyle")
+    try:
+        # The style of the session (--style) is not the saved one
+        qS.setValue("applicationStyle", others[0])
+        SW = settingsWindow(MWSampleProject)
+        assert SW.cmbStyle.currentText().lower() == style
+
+        # The user chooses the shown entry
+        SW.cmbStyle.activated.emit(SW.cmbStyle.currentIndex())
+        assert qS.value("applicationStyle") == SW.cmbStyle.currentText()
+    finally:
+        if oldStyle is None:
+            qS.remove("applicationStyle")
+        else:
+            qS.setValue("applicationStyle", oldStyle)
+    assert qApp.style().objectName() == style

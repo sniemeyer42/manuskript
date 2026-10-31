@@ -62,6 +62,19 @@ def loadQtTranslation(app, translation, catalogue):
     LOGGER.info("No Qt translation found for {}.".format(locale.name()))
     return None
 
+def selectStyle(arguments, settings):
+    """Returns the name of the Qt style to use, or None for the default.
+    A style given with --style is used for this session instead of the saved
+    one, e.g. when the saved style crashes (#467).
+    QT_STYLE_OVERRIDE is not used: many desktops set it for all applications,
+    and the style chosen in the settings would never be kept."""
+    style = getattr(arguments, "style", None)
+    if style:
+        return style
+    if settings.contains("applicationStyle"):
+        return settings.value("applicationStyle")
+    return None
+
 def prepare(arguments, tests=False):
     # Qt WebEngine demands this attribute be set _before_ we create our QApplication object.
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
@@ -90,10 +103,10 @@ def prepare(arguments, tests=False):
 
     app.setStyle("Fusion")
 
-    # Load style from QSettings
+    # Load style from the command line or QSettings
     settings = QSettings(app.organizationName(), app.applicationName())
-    if settings.contains("applicationStyle"):
-        style = settings.value("applicationStyle")
+    style = selectStyle(arguments, settings)
+    if style:
         app.setStyle(style)
 
     # Translation process
@@ -334,6 +347,8 @@ def process_commandline(argv):
                         action="store_true")
     parser.add_argument("-v", "--verbose", action="count", default=1, help="lower the threshold for messages logged to the terminal")
     parser.add_argument("-L", "--logfile", default=None, help="override the default log file location")
+    parser.add_argument("--style", "-style", default=None,
+                        help="use this Qt style (e.g. Fusion) instead of the one chosen in the settings")
     parser.add_argument("filename", nargs="?", metavar="FILENAME", help="the manuskript project (.msk) to open",
                         type=lambda x: is_valid_project(parser, x))
 
