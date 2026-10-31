@@ -1190,6 +1190,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             # Storing the visibility of docks to restore it on restart
             appSettings.setValue("docks", self._dckVisibility)
 
+            # Close the other windows (e.g. About, Import, Compile): they
+            # have no parent, so they would keep the application running.
+            for w in qApp.topLevelWidgets():
+                if w is not self and w.isVisible():
+                    w.close()
+
     def startTimerNoChanges(self):
         """
         Something changed in the project that requires auto-saving.

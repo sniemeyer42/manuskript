@@ -154,3 +154,20 @@ def test_closeAndReopenProject(MWNoProject, tmp_path, monkeypatch):
     MW.treeWorld.setCurrentIndex(MW.mdlWorld.index(0, 0))
     MW.btnRmWorld.click()
     assert MW.mdlWorld.rowCount() == count - 1
+
+
+def test_closeEventClosesOtherWindows(MWNoProject):
+    """
+    Closing the main window also closes parentless windows like the About
+    dialog, which would otherwise keep the application running.
+    """
+    from PyQt5.QtGui import QCloseEvent
+    MW = MWNoProject
+
+    MW.about()
+    assert MW.dialog.isVisible()
+    # Run what closing the main window does, without closing it
+    event = QCloseEvent()
+    MW.closeEvent(event)
+    assert event.isAccepted()
+    assert not MW.dialog.isVisible()
