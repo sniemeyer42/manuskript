@@ -62,7 +62,7 @@ class search(QWidget, Ui_search):
         else:
             self.result.setCurrentRow(0)
 
-        if 0 < self.result.currentRow() < self.result.count():
+        if 0 <= self.result.currentRow() < self.result.count():
             self.openItem(self.result.currentItem())
 
     def previousSearchResult(self):
@@ -71,7 +71,7 @@ class search(QWidget, Ui_search):
         else:
             self.result.setCurrentRow(self.result.count() - 1)
 
-        if 0 < self.result.currentRow() < self.result.count():
+        if 0 <= self.result.currentRow() < self.result.count():
             self.openItem(self.result.currentItem())
 
     def onSearchMenuChange(self):
