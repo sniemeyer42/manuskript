@@ -134,3 +134,41 @@ def test_granularSettingsOutlineGotDeeper(MWEmptyProject, exporterSettingsPath):
     out = f.output(w)
     # Deeper levels use the settings of the deepest known level
     assert out == "Text 0.\n\nPart\nChapter\nText.\n"
+
+
+@pytest.mark.parametrize("content", [
+    "",                            # truncated by an interrupted write
+    "{\"Content\": {\"More\": tr",  # invalid JSON
+    "{\"Content\": {\"More\": true}}",  # missing keys
+    "null",
+])
+def test_invalidSettingsFile(MWEmptyProject, exporterSettingsPath, content):
+    from manuskript.exporter.manuskript.plainText import plainText
+    with open(exporterSettingsPath, "w", encoding="utf-8") as fp:
+        fp.write(content)
+    w = plainText().settingsWidget()
+    s = w.getSettings()
+    assert s["Content"]["IgnoreCompile"] is False
+    assert "Separator" in s and "Transform" in s and "Preview" in s
+
+    # Writing replaces the bad file with valid settings
+    import json
+    w.writeSettings()
+    with open(exporterSettingsPath, encoding="utf-8") as fp:
+        assert json.load(fp) == s
+
+
+def test_writeSettingsThroughSymlink(MWEmptyProject, exporterSettingsPath, tmp_path):
+    """exporter.ini can be a link to a file kept elsewhere (dotfiles)."""
+    import os
+    from manuskript.exporter.manuskript.plainText import plainText
+    target = tmp_path / "dotfiles" / "exporter.ini"
+    target.parent.mkdir()
+    target.write_text("{}")
+    try:
+        os.symlink(str(target), exporterSettingsPath)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links not available")
+    plainText().settingsWidget().writeSettings()
+    assert os.path.islink(exporterSettingsPath)
+    assert "Content" in target.read_text()
