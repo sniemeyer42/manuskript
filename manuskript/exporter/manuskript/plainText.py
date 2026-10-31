@@ -124,7 +124,7 @@ class plainText(basicFormat):
         r = ""
 
         # Do we include item
-        if not item.compile() or s["Content"]["IgnoreCompile"]:
+        if not item.compile() and not s["Content"]["IgnoreCompile"]:
             return ""
 
         # What do we include
