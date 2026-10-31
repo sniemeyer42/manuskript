@@ -3,7 +3,9 @@
 
 """Tests for the spellchecker backends, using fakes instead of real libraries."""
 
+import gzip
 import importlib.util
+import json
 import sys
 import types
 
@@ -11,6 +13,15 @@ import pytest
 
 from manuskript.functions import spellchecker as S
 from manuskript.functions.spellchecker import BasicDictionary
+
+
+@pytest.fixture
+def resources(monkeypatch, tmp_path):
+    """Keeps custom dictionaries and caches out of the user's data folder,
+    and starts with an empty cache of loaded dictionaries."""
+    monkeypatch.setattr(S, "writablePath", lambda: str(tmp_path / "data"))
+    monkeypatch.setattr(S.Spellchecker, "dictionaries", {})
+    return tmp_path
 
 
 def test_abstractMethodsRaiseNotImplementedError():
@@ -179,3 +190,67 @@ def test_isVersionAtLeast():
     assert S.isVersionAtLeast("6.3.8", "6.3.8")
     assert not S.isVersionAtLeast("6.3.7", "6.3.8")
     assert not S.isVersionAtLeast(None, "6.3.8")
+
+
+###############################################################################
+# symspellpy backend
+###############################################################################
+
+class FakeSuggestItem:
+    def __init__(self, term, distance):
+        self.term = term
+        self.distance = distance
+
+
+class FakeSymSpell:
+    """Minimal stand-in for symspellpy.SymSpell."""
+    def __init__(self, maxDistance):
+        self._words = {}
+
+    @property
+    def word_count(self):
+        return len(self._words)
+
+    def load_pickle(self, path, compressed):
+        return False
+
+    def save_pickle(self, path, compressed):
+        pass
+
+    def create_dictionary_entry(self, key, count):
+        self._words[key] = count
+        return True
+
+    def delete_dictionary_entry(self, key):
+        return self._words.pop(key, None) is not None
+
+    def lookup(self, phrase, verbosity, *args, **kwargs):
+        if phrase in self._words:
+            return [FakeSuggestItem(phrase, 0)]
+        return []
+
+
+@pytest.fixture
+def fakeSymspell(monkeypatch, resources):
+    """symspellpy, and pyspellchecker resources with only an 'en' word list."""
+    monkeypatch.setattr(S, "symspellpy", types.SimpleNamespace(
+        SymSpell=FakeSymSpell,
+        Verbosity=types.SimpleNamespace(TOP=0, CLOSEST=1, ALL=2)))
+
+    pyspellcheckerPath = resources / "pyspellchecker"
+    (pyspellcheckerPath / "resources").mkdir(parents=True)
+    with gzip.open(str(pyspellcheckerPath / "resources" / "en.json.gz"), "wt",
+                   encoding="utf-8") as f:
+        f.write(json.dumps({"the": 100, "quick": 10, "dog": 50}))
+    monkeypatch.setattr(S, "pyspellchecker", types.SimpleNamespace(
+        __path__=[str(pyspellcheckerPath)]))
+
+
+def test_symspellUnknownLanguage(fakeSymspell):
+    with pytest.raises(ValueError):
+        S.SymSpellDictionary("C")
+    assert S.Spellchecker.getDictionary("symspellpy:C") is None
+
+    d = S.Spellchecker.getDictionary("symspellpy:en")
+    text = "The quick dog teh. "
+    assert [m.getWord(text) for m in d.checkText(text)] == ["teh"]

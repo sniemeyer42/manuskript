@@ -448,6 +448,11 @@ class SymSpellDictionary(BasicDictionary):
                         for key in data:
                             self._dict.create_dictionary_entry(key, data[key])
                     self._dict.save_pickle(cachePath, False)
+
+        # Without any dictionary data, every word would be misspelled.
+        if self._dict.word_count == 0:
+            raise ValueError("No symspellpy dictionary data for '{}'".format(self.name))
+
         for word in self._customDict:
             self._dict.create_dictionary_entry(word, self.CUSTOM_COUNT)
 
