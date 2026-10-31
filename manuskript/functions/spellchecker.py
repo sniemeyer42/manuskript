@@ -163,7 +163,7 @@ class BasicDictionary:
 
     @staticmethod
     def getLibraryName():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def getLibraryRequirement():
@@ -171,19 +171,19 @@ class BasicDictionary:
 
     @staticmethod
     def getLibraryURL():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def isInstalled():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def getDefaultDictionary():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def availableDictionaries():
-        raise NotImplemented
+        raise NotImplementedError
 
     def checkText(self, text):
         # Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
@@ -230,10 +230,10 @@ class BasicDictionary:
         return matches
 
     def isMisspelled(self, word):
-        raise NotImplemented
+        raise NotImplementedError
 
     def getSuggestions(self, word):
-        raise NotImplemented
+        raise NotImplementedError
 
     def findSuggestions(self, text, start, end):
         if start < end:
