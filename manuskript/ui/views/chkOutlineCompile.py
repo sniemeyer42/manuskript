@@ -66,6 +66,9 @@ class chkOutlineCompile(QCheckBox):
                 self.updateCheckState()
 
     def updateCheckState(self):
+        # This only displays the state of the item(s), that might be inherited
+        # from a parent: submit() must not write it into the item(s).
+        self._updating = True
 
         if self._index:
             self.setEnabled(True)
@@ -87,13 +90,13 @@ class chkOutlineCompile(QCheckBox):
             if same:
                 self.setCheckState(values[0])
             else:
-                self._updating = True
                 self.setCheckState(Qt.PartiallyChecked)
-                self._updating = False
 
         else:
             self.setChecked(False)
             self.setEnabled(False)
+
+        self._updating = False
 
     def submit(self, state):
 
