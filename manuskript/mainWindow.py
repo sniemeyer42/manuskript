@@ -1053,9 +1053,28 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             return False  # the situation has not been handled, cancel action
 
         if ret == QMessageBox.Save:
-            self.saveDatas()
+            if not self.saveDatas() and not self.confirmCloseWithoutSaving():
+                return False  # the project could not be saved, cancel action
 
         return True  # the situation has been handled
+
+    def confirmCloseWithoutSaving(self):
+        """
+        Saving the project failed, but the action the user triggered will close it.
+        Returns True if the user accepts to lose the unsaved changes.
+        """
+        ret = QMessageBox.warning(self,
+            self.tr("Project not saved"),
+            "<p><b>" +
+                self.tr("The project \"{}\" could not be saved.").format(self.projectName()) +
+            "</b></p>" +
+            "<p>" +
+                self.tr("If you close it now, the changes since the last successful save will be lost. "
+                        "Cancel to keep it open, and use \"Save as...\" to save it somewhere else.") +
+            "</p>",
+            QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Cancel)
+
+        return ret == QMessageBox.Discard
 
 
     def closeProject(self):
@@ -1065,7 +1084,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # Make sure data is saved.
         if (self.projectDirty and settings.saveOnQuit == True):
-             self.saveDatas()
+             if not self.saveDatas() and not self.confirmCloseWithoutSaving():
+                 return  # the project could not be saved, user cancelled action
         elif not self.handleUnsavedChanges():
              return  # user cancelled action
 
@@ -1154,7 +1174,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
             # Save data from models
             if settings.saveOnQuit:
-                self.saveDatas()
+                # Only ask if there is something to lose (e.g. not for a project that is
+                # only read, from a location where it cannot be saved).
+                if not self.saveDatas() and self.projectDirty and \
+                        not self.confirmCloseWithoutSaving():
+                    event.ignore()  # the project could not be saved, user cancelled
             elif not self.handleUnsavedChanges():
                 event.ignore() # user opted to cancel the close action
 
@@ -1202,6 +1226,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         If ``projectName`` is given, currentProject becomes projectName.
         In other words, it "saves as...".
+
+        Returns True if the project has been saved.
         """
 
         if projectName:
@@ -1218,7 +1244,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             # after the user has already closed the project through some way. But in that
             # scenario, this code should not be reachable to begin with.
             LOGGER.error("There is no current project to save.")
-            return
+            return False
 
         r = loadSave.saveProject()  # version=0
 
@@ -1233,6 +1259,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             feedback = self.tr("WARNING: Project {} not saved.").format(projectName)
             F.statusMessage(feedback, importance=3)
             LOGGER.warning("Project {} not saved.".format(projectName))
+
+        return bool(r)
 
     def loadEmptyDatas(self):
         self.mdlFlatData = QStandardItemModel(self)
