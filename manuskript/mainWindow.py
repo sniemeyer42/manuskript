@@ -1051,6 +1051,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if not self.currentProject:
             return
 
+        self.submitPendingEdits()
+
         # Make sure data is saved.
         if (self.projectDirty and settings.saveOnQuit == True):
              self.saveDatas()
@@ -1133,6 +1135,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         settings.lastTab = self.tabMain.currentIndex()
 
         if self.currentProject:
+            self.submitPendingEdits()
+
             # Remembering the current items (stores outlineItem's ID)
             settings.openIndexes = self.mainEditor.tabSplitter.openIndexes()
 
@@ -1185,12 +1189,24 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if settings.autoSaveNoChanges:
             self.saveTimerNoChanges.start()
 
+    def submitPendingEdits(self):
+        """
+        Text editors submit their text to the models only some time after the
+        last change. Submits it now, so that what was just typed is saved.
+        """
+        # qApp.allWidgets() includes the fullscreen editor (a separate window)
+        for w in qApp.allWidgets():
+            if isinstance(w, textEditView):
+                w.submitPendingChanges()
+
     def saveDatas(self, projectName=None):
         """Saves the current project (in self.currentProject).
 
         If ``projectName`` is given, currentProject becomes projectName.
         In other words, it "saves as...".
         """
+        # Before the save timer is stopped: submitting may restart it.
+        self.submitPendingEdits()
 
         if projectName:
             self.currentProject = projectName

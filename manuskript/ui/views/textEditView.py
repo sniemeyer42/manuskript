@@ -115,6 +115,8 @@ class textEditView(QTextEdit):
             self.highlighter.setDefaultBlockFormat(bf)
 
     def setCurrentModelIndex(self, index):
+        # Don't lose what was just typed in the item we are leaving
+        self.submitPendingChanges()
         self._indexes = None
         if index.isValid():
             self.setEnabled(True)
@@ -153,6 +155,7 @@ class textEditView(QTextEdit):
         return [self.currentIndex()]
 
     def setCurrentModelIndexes(self, indexes):
+        self.submitPendingChanges()
         self._index = None
         self._indexes = []
 
@@ -369,6 +372,14 @@ class textEditView(QTextEdit):
                 if text != F.toString(item.data(self._column)):
                     LOGGER.debug("Submitting many indexes")
                     self._model.setData(i, text)
+
+    def submitPendingChanges(self):
+        """
+        Submits the text right away if a (delayed) submit is pending, e.g.
+        before the edited index changes or the project is saved.
+        """
+        if self.updateTimer and self.updateTimer.isActive():
+            self.submit()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:

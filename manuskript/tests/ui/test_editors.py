@@ -450,3 +450,95 @@ def test_lineEditView_submitsOncePerEdit(textItem, monkeypatch):
     assert len(calls) == 1
     assert item2.title() == "Secondx"
     assert item1.title() == "Text"
+
+
+def typeAtEnd(ed, text):
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    ed.setTextCursor(cursor)
+    QTest.keyClicks(ed, text)
+
+
+def test_textEditView_submitsPendingTextWhenIndexChanges(textItem):
+    """
+    What was just typed goes to the item being left, even if the editor
+    keeps the focus (e.g. fullscreen editor, Alt+Right).
+    """
+    item1, item2 = textItem("First text."), textItem("Second text.")
+    ed = editorFor(item1)
+    typeAtEnd(ed, "x")
+    assert ed.updateTimer.isActive()  # Submit is still pending
+    ed.setCurrentModelIndex(item2.index())
+    assert item1.text() == "First text.x"
+    assert item2.text() == "Second text."
+    assert ed.toPlainText() == "Second text."
+    ed.close()
+
+
+def test_mainWindow_saveDatasSubmitsPendingText(MWEmptyProject, textItem,
+                                                monkeypatch):
+    """
+    Saving (Ctrl+S, Ctrl+Q) saves what was just typed in the editors.
+    """
+    from manuskript import loadSave
+    item = textItem("Some text.")
+    saved = []
+    monkeypatch.setattr(loadSave, "saveProject",
+                        lambda: saved.append(item.text()) or True)
+    ed = editorFor(item)
+    typeAtEnd(ed, " More")
+    assert ed.updateTimer.isActive()  # Submit is still pending
+    MWEmptyProject.saveDatas()
+    assert saved == ["Some text. More"]
+    ed.close()
+
+
+def test_textEditView_submitsPendingTextWhenIndexesChange(textItem):
+    """
+    Same when the editor gets several items at once (outline item editor).
+    """
+    item1, item2 = textItem("First text."), textItem("Second text.")
+    ed = editorFor(item1)
+    typeAtEnd(ed, "x")
+    assert ed.updateTimer.isActive()  # Submit is still pending
+    ed.setCurrentModelIndexes([item1.index(), item2.index()])
+    assert not ed.updateTimer.isActive()
+    assert item1.text() == "First text.x"
+    assert item2.text() == "Second text."
+    ed.close()
+
+
+@pytest.mark.parametrize("close", ["closeProject", "closeEvent"])
+def test_mainWindow_closeSubmitsPendingText(MWEmptyProject, textItem,
+                                            monkeypatch, close):
+    """
+    Closing the project or quitting submits what was just typed before
+    checking for unsaved changes ("save on quit" off: "Save changes?").
+    """
+    from PyQt5.QtGui import QCloseEvent
+    MW = MWEmptyProject
+    item = textItem("Some text.")
+    ed = editorFor(item)
+    typeAtEnd(ed, " More")
+    assert ed.updateTimer.isActive()  # Submit is still pending
+    MW.projectDirty = False  # As if just saved
+    monkeypatch.setattr(settings, "saveOnQuit", False)
+    monkeypatch.setattr(settings, "openIndexes", settings.openIndexes)
+    monkeypatch.setattr(settings, "lastTab", settings.lastTab)
+    monkeypatch.setattr(MW.mainEditor, "close", lambda: True)
+    asked = []
+
+    def handleUnsavedChanges():
+        asked.append((MW.projectDirty, item.text()))
+        return False  # "Cancel": the project stays open
+
+    monkeypatch.setattr(MW, "handleUnsavedChanges", handleUnsavedChanges)
+    if close == "closeProject":
+        MW.closeProject()
+    else:
+        event = QCloseEvent()
+        MW.closeEvent(event)
+        assert not event.isAccepted()
+    assert asked == [(True, "Some text. More")]
+    assert MW.currentProject
+    ed.close()
