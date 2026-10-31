@@ -111,8 +111,10 @@ class search(QWidget, Ui_search):
             searchText = re.escape(searchText)
 
         if self.searchMenu.matchWords() is True:
-            # Source: https://stackoverflow.com/a/15863102
-            searchText = r'\b' + searchText + r'\b'
+            # Group the pattern so that an alternation applies as a whole, and
+            # use lookarounds instead of \b so that terms starting or ending
+            # with punctuation (e.g. "Mr.") are found too.
+            searchText = r'(?<!\w)(?:' + searchText + r')(?!\w)'
 
         return re.compile(searchText, flags)
 

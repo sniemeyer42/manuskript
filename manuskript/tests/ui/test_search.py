@@ -36,3 +36,33 @@ def test_previousSearchResult_opensEveryResult(searchWidget):
     for i in range(3):
         w.previousSearchResult()
     assert w.opened == [1, 0, 2]
+
+
+def compileWith(text, regex=False, matchWords=False, caseSensitive=False):
+    widget = search()
+    widget.searchMenu.options["Regex"][1] = regex
+    widget.searchMenu.options["MatchWords"][1] = matchWords
+    widget.searchMenu.options["CS"][1] = caseSensitive
+    return widget.compileRegex(text)
+
+
+def matches(regex, text):
+    return [m.group() for m in regex.finditer(text)]
+
+
+def test_compileRegex_matchWords():
+    """'Match words' only matches whole words."""
+    r = compileWith("cat", matchWords=True)
+    assert matches(r, "catalog cat bobcat Cat") == ["cat", "Cat"]
+
+    # Terms starting or ending with punctuation
+    r = compileWith("Mr.", matchWords=True)
+    assert matches(r, "Hello Mr. Smith") == ["Mr."]
+    r = compileWith("e.g.", matchWords=True)
+    assert matches(r, "(e.g. this)") == ["e.g."]
+
+
+def test_compileRegex_regexMatchWords():
+    """With 'Regex' and 'Match words', the whole pattern must be a word."""
+    r = compileWith("cat|dog", regex=True, matchWords=True)
+    assert matches(r, "catalog hotdog cat dog") == ["cat", "dog"]
