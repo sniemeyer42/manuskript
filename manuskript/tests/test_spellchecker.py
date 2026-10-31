@@ -6,6 +6,7 @@
 import gzip
 import importlib.util
 import json
+import string
 import sys
 import types
 from collections import OrderedDict
@@ -20,15 +21,21 @@ class FakeDictionary(BasicDictionary):
     """Dictionary with a fixed list of known words."""
     def __init__(self, words=("the", "a", "is", "dog", "dogs", "bones",
                               "said", "hello", "world", "to", "me", "isn't",
-                              "it", "true")):
+                              "it", "true", "are", "here", "viele", "grüße",
+                              "café", "geht", "gut", "s", "he")):
         self._lang = "fake"
         self._customDict = set()
         self._words = set(words)
 
-    def isMisspelled(self, word):
+    # Like enchant, which raises ValueError for an empty word
+    def _isMisspelled(self, word):
+        if not word:
+            raise ValueError("can't check spelling of empty string")
         return word.lower() not in self._words
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
+        if not word:
+            raise ValueError("can't suggest spellings for empty string")
         return ["the"]
 
     def _saveCustomDict(self):
@@ -674,3 +681,140 @@ def test_languageToolNeedsJava(fakeLanguageTool, monkeypatch):
     monkeypatch.setattr(S.shutil, "which", lambda name: None)
     assert not S.Spellchecker.isInstalled()
     assert fakeLanguageTool.created == []
+
+
+###############################################################################
+# Words
+###############################################################################
+
+@pytest.mark.parametrize("text, misspelled", [
+    ("the dgo is here. ", ["dgo"]),
+    ("a b teh. ", ["teh"]),                        # single letters are not checked
+    ("He said 'hello world' to me. ", []),         # single quotes
+    ("He said ‘hello world’ to me. ", []),
+    ("the dogs' bones are here. ", []),            # plural possessive
+    ("'teh' dog ", ["teh"]),
+    ("It isn’t true. ", []),                       # dictionary only knows isn't
+    ("teh's dog ", ["teh's"]),
+    ("geht’s gut? ", []),                          # dictionary knows no geht's
+    ("geht's gut? ", []),
+    ("Viele Grüße ", []),
+    ("Viele Grüsse ", ["Grüsse"]),
+    ("Viele Grüße", []),                           # being typed: not checked
+    ("Viele Grüsse", []),
+    ("a café", []),
+    ("snake_case dgo ", ["snake", "case", "dgo"]),
+])
+def test_checkText(text, misspelled):
+    d = FakeDictionary()
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+
+
+@pytest.mark.parametrize("text, misspelled", [
+    ("geht's gut? ", []),
+    ("So'n Hund. ", []),
+    ("hab'n wir ", []),
+    ("the dog's bones ", []),                      # possessive
+    ("your'e ", ["your'e"]),
+    ("I'am ", ["I'am"]),
+    ("they'r ", ["they'r"]),
+    ("you’r ", ["you’r"]),
+    ("could'of ", ["could'of"]),
+    ("I'l ", ["I'l"]),
+    ("does't ", ["does't"]),
+    ("your're ", ["your're"]),
+    ("Hund'e ", ["Hund'e"]),
+    ("a'b'c'd'e ", ["a'b'c'd'e"]),
+    ("a'b's ", ["a'b's"]),
+    # A clitic without a word before it, which the dictionary does not know
+    ("Hast du 'ne Ahnung? ", ["ne"]),
+    ("’nen Moment ", ["nen"]),
+    ("''ne ", ["ne"]),
+])
+def test_checkTextContractions(text, misspelled):
+    # Like Hunspell, the dictionary knows single letters and parts of words
+    d = FakeDictionary(words=("geht", "gut", "so", "hund", "hab", "wir",
+                              "the", "dog", "bones", "your", "you", "they",
+                              "could", "does", "am", "of", "re", "ll",
+                              "hast", "du", "ahnung", "moment")
+                       + tuple(string.ascii_lowercase))
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+
+
+@pytest.mark.parametrize("clitic", ["'s", "’s"])
+def test_findSuggestionsForAClitic(clitic):
+    # The selection is only a clitic: there is no word before it to check
+    d = FakeDictionary()
+    text = "the dog" + clitic + " bones"
+    [match] = d.findSuggestions(text, 7, 9)
+    assert (match.start, match.end, match.replacements) == (7, 9, ["the"])
+
+
+def test_findSuggestionsForApostrophes():
+    d = FakeDictionary()
+    text = "the '' ’ dog"
+    assert d.findSuggestions(text, 4, 6) == []         # ''
+    assert d.findSuggestions(text, 7, 8) == []         # ’
+
+
+class UnusedLibrary:
+    """Records what a dictionary asks its library, which then fails."""
+    def __init__(self):
+        self.asked = []
+
+    def __getattr__(self, name):
+        self.asked.append(name)
+        raise AssertionError("asked the library: " + name)
+
+
+@pytest.mark.parametrize("cls", [S.EnchantDictionary, S.PySpellcheckerDictionary,
+                                 S.SymSpellDictionary, S.LanguageToolDictionary])
+def test_wordsWithoutLettersAreNotChecked(monkeypatch, cls):
+    # enchant raises ValueError for an empty word, which would close the
+    # application while highlighting
+    monkeypatch.setattr(S.LanguageToolCache, "_failing", False)
+    library = UnusedLibrary()
+    d = cls.__new__(cls)
+    d._lang = "fake"
+    d._customDict = set()
+    d._cache = {}
+    d._dict = d.tool = library
+    for word in ["", "'", "''", "’", "'’"]:
+        assert not d.isMisspelled(word)
+        assert d.getSuggestions(word) == []
+        assert not d.isWordMisspelled(word)
+        if cls is not S.LanguageToolDictionary:    # checks the whole text
+            assert d.findSuggestions("a " + word + " b", 2, 2 + len(word)) == []
+    assert library.asked == []
+
+
+def test_checkTextCustomWord():
+    d = FakeDictionary()
+    d.addWord("Manuskript")
+    text = "the Manuskript dgo. "
+    assert [m.getWord(text) for m in d.checkText(text)] == ["dgo"]
+
+
+def test_findSuggestionsAgreesWithCheckText():
+    d = FakeDictionary()
+    text = "It isn’t teh dog. "
+    assert d.findSuggestions(text, 3, 8) == []         # isn’t
+    [match] = d.findSuggestions(text, 9, 12)           # teh
+    assert (match.start, match.end, match.replacements) == (9, 12, ["the"])
+
+
+def test_wordBeingTypedIsNotUnderlined(monkeypatch):
+    from manuskript import settings
+    from manuskript.ui.views.textEditView import textEditView
+
+    fake = FakeDictionary()
+    monkeypatch.setattr(settings, "spellcheck", True)
+    monkeypatch.setattr(S.Spellchecker, "getDictionary",
+                        staticmethod(lambda name: fake))
+    editor = textEditView(spellcheck=True, highlighting=True, dict="Fake:fake")
+    editor.setEnabled(True)
+    for character in "viele Grüße":
+        cursor = editor.textCursor()
+        cursor.insertText(character)
+        editor.setTextCursor(cursor)
+    assert underlinedWords(editor) == []

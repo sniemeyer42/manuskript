@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, shutil, string
+import os, gzip, json, glob, re, shutil
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
@@ -217,6 +217,20 @@ class BasicMatch:
     def getWord(self, text):
         return text[self.start:self.end]
 
+# Apostrophes can be part of a word: isn't, isn’t
+APOSTROPHES = "'\u2019"
+
+# Endings after an apostrophe that dictionaries might not know as part of a
+# word: the possessive 's, and colloquial German (geht's, so'n, hab'n, auf'm,
+# so'ne)
+CLITICS = {"s", "n", "m", "ne", "nen", "nem"}
+
+# Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
+# Letters, digits and apostrophes, not preceded or followed by any of them. A
+# word at the very end of the text is not matched, so that a word is not
+# checked while it is being typed (see BasicHighlighter.highlightBlockAfter).
+WORDS = re.compile(r"(?<![^\W_]|['\u2019])((?:[^\W_]|['\u2019])+)(?=[^\w'\u2019]|_)")
+
 class BasicDictionary:
     def __init__(self, name):
         self._lang = name
@@ -279,60 +293,80 @@ class BasicDictionary:
         raise NotImplementedError
 
     def checkText(self, text):
-        # Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
-        WORDS = r'(?iu)((?:[^_\W]|\')+)[^A-Za-z0-9\']'
-        
-        #         (?iu) means case insensitive and Unicode
-        #              ((?:[^_\W]|\')+) means words exclude underscores but include apostrophes
-        #                              [^A-Za-z0-9\'] used with above hack to prevent spellcheck while typing word
-        #
-        # See also https://stackoverflow.com/questions/2062169/regex-w-in-utf-8
-
         matches = []
 
-        for word_object in re.finditer(WORDS, text):
-            word = word_object.group(1)
-            mispelled = self.isMisspelled(word)
-            if mispelled == False:
+        for word_object in WORDS.finditer(text):
+            start, end = word_object.span(1)
+            token = text[start:end]
+
+            # Apostrophes around a word are usually quotes ('hello world') or
+            # the possessive of a plural (dogs')
+            while start < end and text[start] in APOSTROPHES:
+                start += 1
+            while end > start and text[end - 1] in APOSTROPHES:
+                end -= 1
+
+            # Single letters are not checked
+            if end - start < 2:
                 continue
-            punctuation = string.punctuation.replace('-', '')
 
-            FALSE_POSITIVE = r'^[^\w]|([^{}])$'.format(punctuation)
-
-            #inorder to prevent apostrophes causing false positives and keep the same functionality otherwise,
-            #check that the word doesn't have any additional punctuation on it.
-            if re.match(FALSE_POSITIVE, word):
-                # ^[^\w] checks that it doesn't start with a word character
-                # ([\p{P}'])$ checks it doesn't end with punctuation characters
-
-                apostrophe_WORDS = r'(?iu)\b(?<=[\s\'"(])((?:[a-zA-Z]|\')+)(?=\b)'
-
-                # \b(?<=[\s\'"(]) looks for nonword characters and starts grouping after
-                # (?=\b) looks for the word boundary
-                # ((?:[a-zA-Z]|\')+) greedily matches for letters and apostrophes
-                
-                temp = re.match(apostrophe_WORDS, word)
-                mispelled = self.isMisspelled(temp.group(1)) if temp else False
-
-            if (mispelled and not self.isCustomWord(word)):
-
-                matches.append(BasicMatch(
-                    word_object.start(1), word_object.end(1)
-                ))
+            word = text[start:end]
+            if self.isWordMisspelled(word) and (word == token or self.isWordMisspelled(token)):
+                matches.append(BasicMatch(start, end))
 
         return matches
 
+    def isWordMisspelled(self, word):
+        """
+        Like isMisspelled, but also accepts custom words, and words that the
+        dictionary only knows with an ASCII apostrophe (isn’t) or without a
+        clitic (geht's).
+        """
+        if not self.isMisspelled(word) or self.isCustomWord(word):
+            return False
+
+        # Some dictionaries only know the ASCII apostrophe: isn’t -> isn't
+        if "\u2019" in word and not self.isMisspelled(word.replace("\u2019", "'")):
+            return False
+
+        # Some dictionaries know no contractions: geht's -> geht + 's. Only
+        # for known clitics, since dictionaries know most parts of words
+        # (your'e is not your + e), and only after a word ('ne has none).
+        parts = re.split("[" + APOSTROPHES + "]", word)
+        clitic = parts[-1]
+        head = word[:-len(clitic) - 1]
+        if len(parts) > 1 and clitic.lower() in CLITICS and head.strip(APOSTROPHES):
+            if not self.isMisspelled(head):
+                return False
+
+        return True
+
     def isMisspelled(self, word):
-        raise NotImplementedError
+        # A word without letters (empty or only apostrophes) is not asked:
+        # enchant raises ValueError for an empty one, which would close the
+        # application while highlighting.
+        if not word.strip(APOSTROPHES):
+            return False
+        return self._isMisspelled(word)
 
     def getSuggestions(self, word):
+        if not word.strip(APOSTROPHES):
+            return []
+        return self._getSuggestions(word)
+
+    def _isMisspelled(self, word):
+        """Asks the library whether word is misspelled."""
+        raise NotImplementedError
+
+    def _getSuggestions(self, word):
+        """Asks the library for the spellings it suggests for word."""
         raise NotImplementedError
 
     def findSuggestions(self, text, start, end):
         if start < end:
             word = text[start:end]
 
-            if (self.isMisspelled(word) and not self.isCustomWord(word)):
+            if self.isWordMisspelled(word):
                 match = BasicMatch(start, end)
                 match.replacements = self.getSuggestions(word)
 
@@ -407,10 +441,10 @@ class EnchantDictionary(BasicDictionary):
                               [enchant.get_default_language(), QLocale.system().name()],
                               ["en_US"], strict)
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         return not self._dict.check(word)
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         return self._dict.suggest(word)
 
     def isCustomWord(self, word):
@@ -463,10 +497,10 @@ class PySpellcheckerDictionary(BasicDictionary):
         return pickDictionary(PySpellcheckerDictionary.availableDictionaries(),
                               [QLocale.system().name()], ["en"], strict)
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         return len(self._dict.unknown([word])) > 0
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         candidates = self._dict.candidates(word)
         if candidates and word in candidates:
             candidates.remove(word)
@@ -551,7 +585,7 @@ class SymSpellDictionary(BasicDictionary):
         return pickDictionary(SymSpellDictionary.availableDictionaries(),
                               [QLocale.system().name()], ["en"], strict)
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         suggestions = self._dict.lookup(word.lower(), symspellpy.Verbosity.TOP)
         if len(suggestions) > 0 and suggestions[0].distance == 0:
             return False
@@ -562,7 +596,7 @@ class SymSpellDictionary(BasicDictionary):
             return False
         return True
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         upper = word.isupper()
         upper1 = word[0].isupper()
         suggestions = self._dict.lookup_compound(word, 2)
@@ -779,7 +813,7 @@ class LanguageToolDictionary(BasicDictionary):
 
         return matches
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         if self.isCustomWord(word):
             return False
 
@@ -789,7 +823,7 @@ class LanguageToolDictionary(BasicDictionary):
 
         return False
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         suggestions = []
 
         for match in self.checkText(word):
