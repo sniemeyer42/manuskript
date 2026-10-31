@@ -366,7 +366,8 @@ class BasicDictionary:
         if start < end:
             word = text[start:end]
 
-            if self.isWordMisspelled(word):
+            # A selection of several words is not a misspelled word
+            if not any(c.isspace() for c in word) and self.isWordMisspelled(word):
                 match = BasicMatch(start, end)
                 match.replacements = self.getSuggestions(word)
 

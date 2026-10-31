@@ -818,3 +818,13 @@ def test_wordBeingTypedIsNotUnderlined(monkeypatch):
         cursor.insertText(character)
         editor.setTextCursor(cursor)
     assert underlinedWords(editor) == []
+
+
+def test_findSuggestionsOnlyForOneWord():
+    d = FakeDictionary()
+    text = "teh dgo\nhello world"
+    assert d.findSuggestions(text, 0, 7) == []         # teh dgo
+    assert d.findSuggestions(text, 4, 13) == []        # dgo\nhello
+    assert d.findSuggestions(text, 8, 19) == []        # hello world
+    [match] = d.findSuggestions(text, 4, 7)            # dgo
+    assert (match.start, match.end) == (4, 7)
