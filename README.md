@@ -62,7 +62,7 @@ and
 See also
 [Manuskript Contribute page](https://www.theologeek.ch/manuskript/contribute/).
 
-Manuskript is written in Python3 and PyQt5.
+Manuskript is written in Python 3 (version 3.6 or newer) and PyQt5.
 
 ## Free Software
 
