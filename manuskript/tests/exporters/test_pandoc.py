@@ -169,3 +169,14 @@ def test_customPathCannotRun(customPandoc, MWEmptyProject, monkeypatch, markTran
     E = customPandoc("#!/bin/sh\necho 'pandoc: broken' >&2\nexit 3\n", executable=True)
     assert E.run(["--version"]) is None
     assert E.version() == ""
+    assert E.lastError == "pandoc: broken"
+    E = customPandoc("#!/bin/sh\nexit 3\n", executable=True)
+    assert E.run(["--version"]) is None
+    assert E.lastError == "[Return code: 3]"
+
+
+def test_noCommandError(customPandoc, monkeypatch, markTranslations):
+    E = customPandoc("", executable=False)
+    monkeypatch.setattr(E, "customPath", "")
+    assert E.run(["--version"]) is None
+    assert E.lastError == "[No command for Pandoc.]"

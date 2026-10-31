@@ -16,6 +16,9 @@ from manuskript.models import outlineModel, outlineItem
 from manuskript.enums import Outline
 from manuskript.exporter.pandoc import pandocExporter
 
+import logging
+LOGGER = logging.getLogger(__name__)
+
 class importerDialog(QWidget, Ui_importer):
 
     formatsIcon = {
@@ -250,7 +253,9 @@ class importerDialog(QWidget, Ui_importer):
         """
         Called by the Import button.
         """
-        self.startImport(self.mw.mdlOutline)
+        if not self.startImport(self.mw.mdlOutline):
+            # Import failed and the user was told why: keep the dialog open
+            return
 
         # Signal every views that important model changes have happened.
         self.mw.mdlOutline.layoutChanged.emit()
@@ -284,6 +289,9 @@ class importerDialog(QWidget, Ui_importer):
         ID = self.settingsWidget.importUnderID()
         parentItem = outlineModel.getItemByID(ID)
 
+        # To remove what has been added if the import fails
+        topItem, topCount = parentItem, parentItem.childCount()
+
         # Import in top-level folder?
         if self.settingsWidget.importInTopLevelFolder():
             parent = outlineItem(title=os.path.basename(self.fileName),
@@ -292,9 +300,23 @@ class importerDialog(QWidget, Ui_importer):
             items.append(parent)
 
         # Calling the importer
-        rItems = F.startImport(self.fileName,
-                              parentItem,
-                              self.settingsWidget)
+        try:
+            rItems = F.startImport(self.fileName,
+                                  parentItem,
+                                  self.settingsWidget)
+        except Exception as e:
+            # Invalid or damaged file: don't let it close the application
+            LOGGER.exception("Could not import %s.", self.fileName)
+            QMessageBox.critical(self, self.tr("Import error"),
+                                 self.tr("Could not import {}:\n{}").format(
+                                     os.path.basename(self.fileName), e))
+            rItems = None
+
+        if rItems is None:
+            # The import failed (importers report why): undo what was added
+            while topItem.childCount() > topCount:
+                topItem.removeChild(topItem.childCount() - 1)
+            return False
 
         items.extend(rItems)
 
