@@ -20,7 +20,9 @@ LOGGER = logging.getLogger(__name__)
 class MDEditView(textEditView):
 
     blockquoteRegex = QRegExp("^ {0,3}(>\\s*)+")
-    listRegex = QRegExp(r"^(\s*)([+*-]|([0-9a-z])+([.\)]))(\s+)")
+    listRegex = QRegExp(r"^(\s*)([+*-]|([0-9]+|[a-z])([.\)]))(\s+)")
+    # A list item without text, with any marker the highlighter accepts
+    emptyListItemRegex = QRegExp(r"^\s*([0-9a-z]+[.\)]|[+*-]+)\s+$")
     inlineLinkRegex = QRegExp("\\[([^\n]+)\\]\\(([^\n]+)\\)")
     imageRegex = QRegExp("!\\[([^\n]*)\\]\\(([^\n]+)\\)")
     automaticLinkRegex = QRegExp("(<([a-zA-Z]+\\:[^\n]+)>)|(<([^\n]+@[^\n]+)>)")
@@ -110,6 +112,18 @@ class MDEditView(textEditView):
             s = cursor.block().userState()
 
             if s in [MS.MarkdownStateNumberedList,
+                     MS.MarkdownStateBulletPointList] and \
+               self.listRegex.indexIn(text) == -1:
+                # Items with a marker that can't be incremented (the
+                # highlighter also takes e.g. "ii." or "1a." for one), and
+                # indented lines continuing an item: end the list if the line
+                # is only a marker, else keep the indentation.
+                if self.emptyListItemRegex.exactMatch(text):
+                    endList = True
+                else:
+                    autoInsertText = self.getPriorIndentation()
+
+            elif s in [MS.MarkdownStateNumberedList,
                      MS.MarkdownStateBulletPointList]:
                 self.listRegex.indexIn(text)
                 g = self.listRegex.capturedTexts()

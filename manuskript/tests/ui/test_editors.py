@@ -627,3 +627,55 @@ def test_textEditView_pasteHonoursReadOnly():
     ed.setReadOnly(False)
     QTest.keyClick(ed, Qt.Key_V, Qt.ControlModifier)
     assert ed.toPlainText() == "PastedText"
+
+
+@pytest.mark.parametrize("text, result", [
+    ("1. first", "1. first\n2. "),
+    ("9. ninth", "9. ninth\n10. "),
+    ("10. tenth", "10. tenth\n11. "),  # Not "1. "
+    ("12) twelfth", "12) twelfth\n13) "),
+    ("a. alpha", "a. alpha\nb. "),
+    ("  - bullet", "  - bullet\n  - "),
+    ("9. ninth\n10. ", "9. ninth\n\n"),  # Empty item ends the list
+    # Markers that can't be incremented keep the indentation,
+    ("  ii. roman", "  ii. roman\n  "),
+    ("   1a. x", "   1a. x\n   "),
+    ("ii. ", "\n"),  # an empty item ends the list
+    ("-- ", "\n"),
+    # So do indented lines continuing an item, even with a single word
+    ("1. item\n\tword", "1. item\n\tword\n\t"),
+    ("1. item\n    word", "1. item\n    word\n    "),
+    ("a) item\n    continued", "a) item\n    continued\n    "),
+    ("1. item\n    word  ", "1. item\n    word  \n    "),
+    ("1. item\n\tetc.", "1. item\n\tetc.\n\t"),  # No space: not a marker
+])
+def test_MDEditView_listContinuation(textItem, text, result):
+    """
+    Return at the end of a list item starts the next item.
+    """
+    from PyQt5.QtCore import Qt
+    ed = editorFor(textItem(text))
+    typeAtEnd(ed, "")
+    QTest.keyClick(ed, Qt.Key_Return)
+    assert ed.toPlainText() == result
+    ed.close()
+
+
+def test_MDEditView_returnKeepsIndentedLineInList(textItem):
+    """
+    Typing a one-word line indented under a list item and pressing Return
+    keeps the word.
+    """
+    from PyQt5.QtCore import Qt
+    ed = editorFor(textItem(""))
+    typeAtEnd(ed, "1. Buy groceries")
+    QTest.keyClick(ed, Qt.Key_Return)
+    for i in range(3):
+        QTest.keyClick(ed, Qt.Key_Backspace)  # Remove "2. "
+    QTest.keyClick(ed, Qt.Key_Tab)
+    QTest.keyClicks(ed, "Milk")
+    QTest.keyClick(ed, Qt.Key_Return)
+    QTest.keyClicks(ed, "Eggs")
+    QTest.keyClick(ed, Qt.Key_Return)
+    assert ed.toPlainText() == "1. Buy groceries\n\tMilk\n\tEggs\n\t"
+    ed.close()
