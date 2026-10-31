@@ -140,7 +140,7 @@ class cheatSheet(QWidget, Ui_cheatSheet):
                 self.addCategory(cat[0])
                 for item in filtered:
                     i = QListWidgetItem(item[0])
-                    i.setData(Qt.UserRole, Ref.EmptyRef.format(cat[1], item[1], item[0]))
+                    i.setData(Qt.UserRole, Ref.titledReference(cat[1], item[1], item[0]))
                     i.setData(Qt.UserRole + 1, item[2])
                     self.list.addItem(i)
 
