@@ -31,13 +31,14 @@ class treeView(QTreeView, dndView, outlineBasics):
         self.titleDelegate = treeTitleDelegate()
         self.setItemDelegateForColumn(Outline.title, self.titleDelegate)
 
-    def makePopupMenu(self):
-        menu = outlineBasics.makePopupMenu(self)
+    def makePopupMenu(self, pos=None):
+        if pos is None:
+            pos = self.viewport().mapFromGlobal(QCursor.pos())
+        menu = outlineBasics.makePopupMenu(self, pos)
         first = menu.actions()[3]
 
         # Open item in new tab
         #sel = self.selectedIndexes()
-        pos = self.viewport().mapFromGlobal(QCursor.pos())
         mouseIndex = self.indexAt(pos)
 
         # Expand /collapse item

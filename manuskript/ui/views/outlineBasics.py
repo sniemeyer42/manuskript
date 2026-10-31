@@ -18,8 +18,16 @@ class outlineBasics(QAbstractItemView):
     def __init__(self, parent=None):
         self._indexesToOpen = None
         self.menuCustomIcons = None
+        # Right-clicked item, if it is not selected (set by makePopupMenu)
+        self._menuIndex = None
+        # Set while an action of the popup menu runs (see fromMenu)
+        self._actionIndex = None
 
     def getSelection(self):
+        if self._actionIndex is not None:
+            # Action of a popup menu that was opened on an unselected item
+            return [self._actionIndex]
+
         sel = []
         for i in self.selectedIndexes():
             if i.column() != 0:
@@ -28,16 +36,52 @@ class outlineBasics(QAbstractItemView):
                 sel.append(i)
         return sel
 
+    def actionIndex(self):
+        """
+        Returns the index that Rename, Paste and New Folder / Text act on: the
+        current index, or the item the popup menu was opened on.
+        """
+        if self._actionIndex is not None:
+            return self._actionIndex
+        return self.currentIndex()
+
+    def actionIndexes(self):
+        """
+        Returns the indexes that Copy and New Folder / Text act on: all
+        selected indexes (unlike getSelection(), also if the title column is
+        hidden), or the item the popup menu was opened on.
+        """
+        if self._actionIndex is not None:
+            return [self._actionIndex]
+        return self.selectionModel().selectedIndexes()
+
+    def fromMenu(self, action, *args):
+        """
+        Runs action(*args) for the popup menu. If the menu was opened on an
+        item that is not selected, the action acts on that item instead of the
+        selection: right-clicking does not change the selection (in the
+        editor's tree, that would also open the item in the editor).
+        """
+        self._actionIndex = self._menuIndex
+        try:
+            action(*args)
+        finally:
+            self._actionIndex = None
+
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.RightButton:
-            self.menu = self.makePopupMenu()
+            self.menu = self.makePopupMenu(event.pos())
             self.menu.popup(event.globalPos())
         # We don't call QAbstractItemView.mouseReleaseEvent because
         # outlineBasics is never subclassed alone. So the others views
         # (outlineView, corkView, treeView) that subclass outlineBasics
         # call their respective mother class.
 
-    def makePopupMenu(self):
+    def makePopupMenu(self, pos=None):
+        """
+        Builds the popup menu for the item at pos (in viewport coordinates),
+        by default the item under the mouse cursor.
+        """
         index = self.currentIndex()
         sel = self.getSelection()
         clipboard = qApp.clipboard()
@@ -45,8 +89,19 @@ class outlineBasics(QAbstractItemView):
         menu = QMenu(self)
 
         # Get index under cursor
-        pos = self.viewport().mapFromGlobal(QCursor.pos())
+        if pos is None:
+            pos = self.viewport().mapFromGlobal(QCursor.pos())
         mouseIndex = self.indexAt(pos)
+        if mouseIndex.isValid():
+            # Like the indexes of getSelection()
+            mouseIndex = mouseIndex.sibling(mouseIndex.row(), 0)
+
+        # The menu acts on the right-clicked item if it is not selected
+        if mouseIndex.isValid() and mouseIndex not in sel:
+            sel = [mouseIndex]
+            self._menuIndex = mouseIndex
+        else:
+            self._menuIndex = None
 
         # Get index's title
         if mouseIndex.isValid():
@@ -88,13 +143,13 @@ class outlineBasics(QAbstractItemView):
         self.actAddFolder = QAction(QIcon.fromTheme("folder-new"),
                                     safeTranslate(qApp, "outlineBasics", "New &Folder"),
                                     menu)
-        self.actAddFolder.triggered.connect(self.addFolder)
+        self.actAddFolder.triggered.connect(lambda: self.fromMenu(self.addFolder))
         menu.addAction(self.actAddFolder)
 
         self.actAddText = QAction(QIcon.fromTheme("document-new"),
                                   safeTranslate(qApp, "outlineBasics", "New &Text"),
                                   menu)
-        self.actAddText.triggered.connect(self.addText)
+        self.actAddText.triggered.connect(lambda: self.fromMenu(self.addText))
         menu.addAction(self.actAddText)
 
         menu.addSeparator()
@@ -102,30 +157,30 @@ class outlineBasics(QAbstractItemView):
         # Copy, cut, paste, duplicate
         self.actCut = QAction(QIcon.fromTheme("edit-cut"),
                               safeTranslate(qApp, "outlineBasics", "C&ut"), menu)
-        self.actCut.triggered.connect(self.cut)
+        self.actCut.triggered.connect(lambda: self.fromMenu(self.cut))
         menu.addAction(self.actCut)
 
         self.actCopy = QAction(QIcon.fromTheme("edit-copy"),
                                safeTranslate(qApp, "outlineBasics", "&Copy"), menu)
-        self.actCopy.triggered.connect(self.copy)
+        self.actCopy.triggered.connect(lambda: self.fromMenu(self.copy))
         menu.addAction(self.actCopy)
 
         self.actPaste = QAction(QIcon.fromTheme("edit-paste"),
                                 safeTranslate(qApp, "outlineBasics", "&Paste"), menu)
-        self.actPaste.triggered.connect(self.paste)
+        self.actPaste.triggered.connect(lambda: self.fromMenu(self.paste))
         menu.addAction(self.actPaste)
 
         # Rename / duplicate / remove items
         self.actDelete = QAction(QIcon.fromTheme("edit-delete"),
                                  safeTranslate(qApp, "outlineBasics", "&Delete"),
                                  menu)
-        self.actDelete.triggered.connect(self.delete)
+        self.actDelete.triggered.connect(lambda: self.fromMenu(self.delete))
         menu.addAction(self.actDelete)
 
         self.actRename = QAction(QIcon.fromTheme("edit-rename"),
                                  safeTranslate(qApp, "outlineBasics", "&Rename"),
                                  menu)
-        self.actRename.triggered.connect(self.rename)
+        self.actRename.triggered.connect(lambda: self.fromMenu(self.rename))
         menu.addAction(self.actRename)
 
         menu.addSeparator()
@@ -134,7 +189,7 @@ class outlineBasics(QAbstractItemView):
         self.menuPOV = QMenu(safeTranslate(qApp, "outlineBasics", "Set POV"), menu)
         mw = mainWindow()
         a = QAction(QIcon.fromTheme("dialog-no"), safeTranslate(qApp, "outlineBasics", "None"), self.menuPOV)
-        a.triggered.connect(lambda: self.setPOV(""))
+        a.triggered.connect(lambda: self.fromMenu(self.setPOV, ""))
         self.menuPOV.addAction(a)
         self.menuPOV.addSeparator()
 
@@ -156,7 +211,7 @@ class outlineBasics(QAbstractItemView):
 
             menus[2 - imp].addAction(a)
 
-        mpr.mapped.connect(self.setPOV)
+        mpr.mapped.connect(lambda POV: self.fromMenu(self.setPOV, POV))
         menu.addMenu(self.menuPOV)
 
         # Status
@@ -172,7 +227,7 @@ class outlineBasics(QAbstractItemView):
             a.triggered.connect(mpr.map)
             mpr.setMapping(a, i)
             self.menuStatus.addAction(a)
-        mpr.mapped.connect(self.setStatus)
+        mpr.mapped.connect(lambda status: self.fromMenu(self.setStatus, status))
         menu.addMenu(self.menuStatus)
 
         # Labels
@@ -185,7 +240,7 @@ class outlineBasics(QAbstractItemView):
             a.triggered.connect(mpr.map)
             mpr.setMapping(a, i)
             self.menuLabel.addAction(a)
-        mpr.mapped.connect(self.setLabel)
+        mpr.mapped.connect(lambda label: self.fromMenu(self.setLabel, label))
         menu.addMenu(self.menuLabel)
 
         menu.addSeparator()
@@ -196,7 +251,7 @@ class outlineBasics(QAbstractItemView):
         else:
             self.menuCustomIcons = QMenu(safeTranslate(qApp, "outlineBasics", "Set Custom Icon"), menu)
             a = QAction(safeTranslate(qApp, "outlineBasics", "Restore to default"), self.menuCustomIcons)
-            a.triggered.connect(lambda: self.setCustomIcon(""))
+            a.triggered.connect(lambda: self.fromMenu(self.setCustomIcon, ""))
             self.menuCustomIcons.addAction(a)
             self.menuCustomIcons.addSeparator()
 
@@ -215,7 +270,8 @@ class outlineBasics(QAbstractItemView):
                 item.setData(Qt.UserRole, i)
                 item.setToolTip(i)
                 self.lstIcons.addItem(item)
-            self.lstIcons.itemClicked.connect(self.setCustomIconFromItem)
+            self.lstIcons.itemClicked.connect(
+                lambda item: self.fromMenu(self.setCustomIconFromItem, item))
             self.lstIcons.setViewMode(self.lstIcons.IconMode)
             self.lstIcons.setUniformItemSizes(True)
             self.lstIcons.setResizeMode(self.lstIcons.Adjust)
@@ -260,7 +316,7 @@ class outlineBasics(QAbstractItemView):
 
     def rename(self):
         if len(self.getSelection()) == 1:
-            index = self.currentIndex()
+            index = self.actionIndex()
             self.edit(index)
         elif len(self.getSelection()) > 1:
             # FIXME: add smart rename
@@ -273,10 +329,10 @@ class outlineBasics(QAbstractItemView):
         self.addItem("text")
 
     def addItem(self, _type="folder"):
-        if len(self.selectedIndexes()) == 0:
+        if len(self.actionIndexes()) == 0:
             parent = self.rootIndex()
         else:
-            parent = self.currentIndex()
+            parent = self.actionIndex()
 
         if _type == "text":
             _type = settings.defaultTextType
@@ -285,7 +341,7 @@ class outlineBasics(QAbstractItemView):
         self.model().appendItem(item, parent)
 
     def copy(self):
-        mimeData = self.model().mimeData(self.selectionModel().selectedIndexes())
+        mimeData = self.model().mimeData(self.actionIndexes())
         qApp.clipboard().setMimeData(mimeData)
 
     def paste(self, mimeData=None):
@@ -293,7 +349,7 @@ class outlineBasics(QAbstractItemView):
         Paste item from mimeData to selected item. If mimeData is not given,
         it is taken from clipboard. If not item selected, paste into root.
         """
-        index = self.currentIndex()
+        index = self.actionIndex()
         if len(self.getSelection()) == 0:
             index = self.rootIndex()
 

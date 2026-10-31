@@ -496,3 +496,173 @@ def test_editorTabSwitchSelectsItemInTree(MWShown):
     QTest.keyRelease(MW.mainEditor, Qt.Key_Control)
     qApp.processEvents()
     assert selectedIDs(view) == ["42"]
+
+
+def rightClickItem(view, ID):
+    """Right-clicks an item. The release opens the popup menu (view.menu),
+    which is closed again: the tests trigger its actions directly."""
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import qApp
+    index = view.model().getIndexByID(ID)
+    view.scrollTo(index)
+    qApp.processEvents()
+    pos = view.visualRect(index).center()
+    QTest.mouseClick(view.viewport(), Qt.RightButton, Qt.NoModifier, pos)
+    view.menu.close()
+    qApp.processEvents()
+
+
+def tabIDs(MW):
+    return [w.currentIndex.internalPointer().ID()
+            for w in MW.mainEditor.allTabs()]
+
+
+@pytest.mark.parametrize("viewName, tab", [("treeRedacOutline", "TabRedac"),
+                                           ("treeOutlineOutline", "TabOutline")])
+def test_popupMenuActsOnRightClickedItem(MWShown, monkeypatch, viewName, tab):
+    """
+    Right-clicking does not change the selection. The popup menu acts on the
+    right-clicked item if it is not selected, otherwise on the
+    (multi-)selection.
+    (https://github.com/olivierkes/manuskript/issues/1286)
+    """
+    from PyQt5.QtWidgets import qApp
+    from manuskript import settings
+    from manuskript.enums import Outline
+    monkeypatch.setattr(settings, "dontShowDeleteWarning", True)
+    MW = MWShown
+    model = MW.mdlOutline
+    MW.tabMain.setCurrentIndex(getattr(MW, tab))
+    view = getattr(MW, viewName)
+    view.expandAll()
+    qApp.processEvents()
+
+    def status(*IDs):
+        return [model.getItemByID(ID).data(Outline.status) for ID in IDs]
+
+    clickItem(view, "40")
+    clickItem(view, "41", modifier=Qt.ControlModifier)
+
+    # On a selected item: acts on the selection
+    rightClickItem(view, "41")
+    assert selectedIDs(view) == ["40", "41"]
+    assert view.actNewTab.text() == "Open 2 items in new tabs"
+    view.menuStatus.actions()[1].trigger()
+    assert status("40", "41", "42") == ["1", "1", ""]
+
+    # On another item: acts on that item, the selection does not change
+    rightClickItem(view, "42")
+    assert selectedIDs(view) == ["40", "41"]
+    assert view.actOpen.text() == "Open The conversion of Peter"
+    view.menuStatus.actions()[2].trigger()
+    assert status("40", "41", "42") == ["1", "1", "2"]
+    view.actDelete.trigger()
+    assert model.getItemByID("42") is None
+    assert status("40", "41") == ["1", "1"]
+
+    # Paste into the right-clicked folder
+    view.copy()
+    rightClickItem(view, "28")
+    view.actPaste.trigger()
+    assert [model.getItemByID(i).title() for i in childIDs(model, "28")][-2:] \
+           == ["Cornelius calls for Peter", "Peter's vision"]
+
+    # Outside of the popup menu, the selection again
+    view.setStatus(3)
+    assert status("37", "40", "41") == ["", "3", "3"]
+    assert selectedIDs(view) == ["40", "41"]
+
+
+def test_popupMenuIsForClickedPosition(MWShown, monkeypatch):
+    """
+    The popup menu is built for the right-clicked item, not for the item
+    under the mouse cursor (QCursor.pos() is not always where the click was:
+    e.g. an X server keeps the cursor on the screen).
+    """
+    from PyQt5.QtGui import QCursor
+    from PyQt5.QtWidgets import qApp
+    MW = MWShown
+    MW.tabMain.setCurrentIndex(MW.TabRedac)
+    view = MW.treeRedacOutline
+    view.expandAll()
+    qApp.processEvents()
+
+    # The cursor is over another item
+    index = MW.mdlOutline.getIndexByID("40")
+    view.scrollTo(index)
+    qApp.processEvents()
+    cursor = view.viewport().mapToGlobal(view.visualRect(index).center())
+    monkeypatch.setattr(QCursor, "pos", staticmethod(lambda: cursor))
+
+    rightClickItem(view, "29")
+    assert view.actOpen.text() == "Open Chapter 10"
+    assert view.actCollapse in view.menu.actions()
+    assert "Chapter 10" in view.actCollapse.text()  # "Collapse Chapter 10"
+
+
+def test_popupMenuInEditorTreeKeepsEditorTab(MWShown):
+    """
+    Right-clicking an item in the editor's tree does not open it in the
+    editor, and 'Open ... in a new tab' opens it in a new tab.
+    """
+    from PyQt5.QtWidgets import qApp
+    MW = MWShown
+    model = MW.mdlOutline
+    MW.tabMain.setCurrentIndex(MW.TabRedac)
+    view = MW.treeRedacOutline
+    view.expandAll()
+    qApp.processEvents()
+
+    clickItem(view, "40")
+    assert tabIDs(MW) == ["40"]
+
+    rightClickItem(view, "42")
+    assert tabIDs(MW) == ["40"]
+    assert selectedIDs(view) == ["40"]
+    view.actNewTab.trigger()
+    qApp.processEvents()
+    assert tabIDs(MW) == ["40", "42"]
+    assert selectedIDs(view) == ["42"]
+
+    rightClickItem(view, "29")
+    view.actCollapse.trigger()
+    assert not view.isExpanded(model.getIndexByID("29"))
+    assert tabIDs(MW) == ["40", "42"]
+    assert selectedIDs(view) == ["42"]
+
+    # 'Open' opens it in the current tab, like a click
+    rightClickItem(view, "37")
+    view.actOpen.trigger()
+    qApp.processEvents()
+    assert tabIDs(MW) == ["40", "37"]
+    assert selectedIDs(view) == ["37"]
+
+
+def test_copyAndNewTextWithHiddenTitleColumn(MWSampleProject, monkeypatch):
+    """
+    Edit > Copy and New Text act on the selection in the Outline tab, also if
+    its title column is hidden (Settings > Views > Outline).
+    """
+    from PyQt5.QtWidgets import qApp
+    from manuskript import settings
+    from manuskript.enums import Outline
+    MW = MWSampleProject
+    model = MW.mdlOutline
+    view = MW.treeOutlineOutline
+    monkeypatch.setattr(settings, "outlineViewColumns",
+                        [Outline.POV, Outline.status])
+    view.hideColumns()
+    try:
+        selectRows(view, ["40"])
+        view.copy()
+        items = model.decodeMimeData(qApp.clipboard().mimeData())
+        assert [i.title() for i in items] == ["Cornelius calls for Peter"]
+
+        for ID in ["34", "29"]:  # Top-level and nested folder
+            count = len(childIDs(model, ID))
+            selectRows(view, [ID])
+            view.addText()
+            assert len(childIDs(model, ID)) == count + 1
+    finally:
+        monkeypatch.undo()
+        view.hideColumns()
