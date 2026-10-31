@@ -602,13 +602,14 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             pass
 
     def deleteCharacter(self):
-        ID = self.lstCharacters.removeCharacters()
-        if ID is None:
+        IDs = self.lstCharacters.removeCharacters()
+        if not IDs:
             return
-        for itemID in self.mdlOutline.findItemsByPOV(ID):
-            item = self.mdlOutline.getItemByID(itemID)
-            if item:
-                item.resetPOV()
+        for ID in IDs:
+            for itemID in self.mdlOutline.findItemsByPOV(ID):
+                item = self.mdlOutline.getItemByID(itemID)
+                if item:
+                    item.resetPOV()
 
     ###############################################################################
     # PLOTS

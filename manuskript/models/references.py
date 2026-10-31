@@ -114,10 +114,13 @@ def infos(ref):
 
         # The POV of the scene
         POV = ""
+        character = None
         if item.POV():
+            character = mainWindow().mdlCharacter.getCharacterByID(item.POV())
+        if character:
             POV = "<a href='{ref}'>{text}</a>".format(
                     ref=characterReference(item.POV()),
-                    text=mainWindow().mdlCharacter.getCharacterByID(item.POV()).name())
+                    text=character.name())
 
         # The status of the scene
         status = item.status()
