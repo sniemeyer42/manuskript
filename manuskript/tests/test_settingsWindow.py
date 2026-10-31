@@ -260,3 +260,47 @@ def test_translationChoice(MWSampleProject, monkeypatch):
             qS.remove("applicationTranslation")
         else:
             qS.setValue("applicationTranslation", oldTranslation)
+
+
+def test_autoSaveTimer(MWSampleProject, monkeypatch):
+    """Turning autosave on or off in the settings applies immediately."""
+    import time
+    from PyQt5.QtCore import Qt
+    from manuskript import settings as S
+    from manuskript.settingsWindow import settingsWindow
+    MW = MWSampleProject
+    SW = settingsWindow(MW)
+    for name in ["autoSave", "autoSaveDelay", "saveOnQuit"]:
+        monkeypatch.setattr(S, name, getattr(S, name))  # restored afterwards
+
+    SW.chkAutoSave.setChecked(False)
+    assert S.autoSave is False
+    assert not MW.saveTimer.isActive()
+
+    SW.chkAutoSave.setChecked(True)
+    assert S.autoSave is True
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.interval() == S.autoSaveDelay * 60 * 1000
+
+    # Other options do not restart the countdown, a new delay does
+    MW.saveTimer.setTimerType(Qt.PreciseTimer)
+    MW.saveTimer.start()
+    time.sleep(0.3)
+    SW.chkSaveOnQuit.setChecked(not SW.chkSaveOnQuit.isChecked())
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.remainingTime() < MW.saveTimer.interval() - 200
+    SW.txtAutoSave.setText(str(S.autoSaveDelay + 1))
+    SW.txtAutoSave.textEdited.emit(SW.txtAutoSave.text())
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.interval() == S.autoSaveDelay * 60 * 1000
+    assert MW.saveTimer.remainingTime() > MW.saveTimer.interval() - 200
+
+    SW.chkAutoSave.setChecked(False)
+    assert not MW.saveTimer.isActive()
+
+    # Pending "save after changes" is cancelled when that option is disabled
+    SW.chkAutoSaveNoChanges.setChecked(True)
+    MW.startTimerNoChanges()
+    assert MW.saveTimerNoChanges.isActive()
+    SW.chkAutoSaveNoChanges.setChecked(False)
+    assert not MW.saveTimerNoChanges.isActive()
