@@ -19,13 +19,36 @@ try:
 except ImportError:
     pyspellchecker = None
 
+def getPackageVersion(module, distribution):
+    # Recent releases of some packages (symspellpy for example) have no
+    # __version__ anymore, so ask the metadata of the installed package first.
+    try:
+        from importlib.metadata import version
+        return version(distribution)
+    except Exception:
+        return getattr(module, "__version__", None)
+
+def isVersionAtLeast(version, minimum):
+    # distutils.version was removed in Python 3.12, and comparing the strings
+    # gets "6.10.1" < "6.3.8" wrong, so compare the numbers.
+    def numbers(v):
+        return tuple(int(n) for n in re.findall(r"\d+", str(v))[:3])
+    return bool(version) and numbers(version) >= numbers(minimum)
+
 SYMSPELLPY_MIN_VERSION = "6.3.8"
+
+def isSymspellpyUsable(module):
+    version = getPackageVersion(module, "symspellpy")
+    if version is None:
+        # Neither package metadata (a frozen application might have none) nor
+        # __version__: look for the API added in the minimum version.
+        return hasattr(getattr(module, "SymSpell", None), "delete_dictionary_entry")
+    return isVersionAtLeast(version, SYMSPELLPY_MIN_VERSION)
+
 try:
     import symspellpy
-    import distutils.version
 
-    if ((not hasattr(symspellpy, '__version__')) or
-        (distutils.version.LooseVersion(symspellpy.__version__) < SYMSPELLPY_MIN_VERSION)):
+    if not isSymspellpyUsable(symspellpy):
         symspellpy = None
 
 except ImportError:

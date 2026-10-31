@@ -3,6 +3,10 @@
 
 """Tests for the spellchecker backends, using fakes instead of real libraries."""
 
+import importlib.util
+import sys
+import types
+
 import pytest
 
 from manuskript.functions import spellchecker as S
@@ -119,3 +123,59 @@ def test_languageToolCheckErrorDoesNotRaise(monkeypatch):
     assert d.checkText("The teh dog.") == []
     assert d.findSuggestions("The teh dog.", 5, 5) == []
     assert tool.checked
+
+
+###############################################################################
+# symspellpy detection
+###############################################################################
+
+def loadSpellcheckerCopy(monkeypatch, symspellpyVersion=None,
+                         metadataVersion=None, api=False):
+    """Executes a fresh copy of the spellchecker module with a fake symspellpy
+    installed and distutils unavailable (as in Python >= 3.12)."""
+    # Python >= 3.8
+    metadata = pytest.importorskip("importlib.metadata")
+
+    fake = types.ModuleType("symspellpy")
+    if symspellpyVersion:
+        fake.__version__ = symspellpyVersion
+    if api:
+        fake.SymSpell = types.SimpleNamespace(delete_dictionary_entry=None)
+    monkeypatch.setitem(sys.modules, "symspellpy", fake)
+    monkeypatch.setitem(sys.modules, "distutils", None)
+    monkeypatch.setitem(sys.modules, "distutils.version", None)
+
+    def version(distribution):
+        if distribution == "symspellpy" and metadataVersion:
+            return metadataVersion
+        raise metadata.PackageNotFoundError(distribution)
+    monkeypatch.setattr(metadata, "version", version)
+
+    spec = importlib.util.spec_from_file_location("spellchecker_copy", S.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("symspellpyVersion, metadataVersion, api, detected", [
+    (None, "6.10.1", True, True),   # recent releases have no __version__
+    ("6.7.7", None, True, True),    # no package metadata, but __version__
+    ("6.3.8", "6.3.8", True, True),
+    (None, "6.3.7", True, False),   # too old
+    # Unknown version, as in a frozen application without package metadata
+    (None, None, True, True),
+    (None, None, False, False),
+])
+def test_symspellpyDetection(monkeypatch, symspellpyVersion, metadataVersion,
+                             api, detected):
+    module = loadSpellcheckerCopy(monkeypatch, symspellpyVersion,
+                                  metadataVersion, api)
+    assert (module.symspellpy is not None) == detected
+    assert module.SymSpellDictionary.isInstalled() == detected
+
+
+def test_isVersionAtLeast():
+    assert S.isVersionAtLeast("6.10.1", "6.3.8")
+    assert S.isVersionAtLeast("6.3.8", "6.3.8")
+    assert not S.isVersionAtLeast("6.3.7", "6.3.8")
+    assert not S.isVersionAtLeast(None, "6.3.8")
