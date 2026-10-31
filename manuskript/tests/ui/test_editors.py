@@ -422,3 +422,31 @@ def test_textEditView_toIdealText():
         "a\u00a0b\u2029cd\u2028e\ufdd0f\ufdd1"
     assert ed.toIdealText() == "a\u00a0b\ncd\ne\nf\n"
     assert ed.toPlainText() == ed.toIdealText()
+
+
+def test_lineEditView_submitsOncePerEdit(textItem, monkeypatch):
+    """
+    Changing the edited item does not connect textEdited to submit once
+    more each time (every keystroke was submitted once per item change).
+    """
+    from manuskript.ui.views.lineEditView import lineEditView
+
+    calls = []
+    submit = lineEditView.submit
+
+    def countingSubmit(self):
+        calls.append(self)
+        submit(self)
+
+    monkeypatch.setattr(lineEditView, "submit", countingSubmit)
+
+    item1, item2 = textItem("First text."), textItem("Second text.")
+    item2.setData(Outline.title, "Second")
+    edit = lineEditView(None)
+    for item in [item1, item2, item1, item2]:
+        edit.setCurrentModelIndex(item.index())
+    assert edit.text() == "Second"
+    QTest.keyClick(edit, "x")
+    assert len(calls) == 1
+    assert item2.title() == "Secondx"
+    assert item1.title() == "Text"
