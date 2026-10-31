@@ -66,6 +66,37 @@ try:
 except:
     languagetool = None
 
+def pickDictionary(available, preferred, fallback=(), strict=False):
+    """
+    Returns the name in `available` matching the first possible name in
+    `preferred`: the same name (en-US is the same as en_US), else the same
+    language in another region (en_GB matches en_US). Unless strict, then
+    tries `fallback` the same way, and finally takes the first available
+    dictionary. Returns None if no dictionary was found.
+    """
+    available = list(available)
+
+    def normalized(name):
+        return name.replace("-", "_").lower()
+
+    def language(name):
+        return normalized(name).split("_")[0]
+
+    def find(names, key):
+        for name in names:
+            if name:
+                for a in available:
+                    if key(a) == key(name):
+                        return a
+        return None
+
+    for names in [preferred] if strict else [preferred, fallback]:
+        dictionary = find(names, normalized) or find(names, language)
+        if dictionary:
+            return dictionary
+
+    return available[0] if available and not strict else None
+
 class Spellchecker:
     dictionaries = {}
     # In order of priority
@@ -114,10 +145,13 @@ class Spellchecker:
 
     @staticmethod
     def getDefaultDictionary():
-        for impl in Spellchecker.implementations:
-            default = impl.getDefaultDictionary()
-            if default:
-                return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
+        # A dictionary in the language of the system is better than one in
+        # another language from a library of higher priority.
+        for strict in [True, False]:
+            for impl in Spellchecker.implementations:
+                default = impl.getDefaultDictionary(strict)
+                if default:
+                    return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
         return None
 
     @staticmethod
@@ -204,7 +238,11 @@ class BasicDictionary:
         raise NotImplementedError
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
+        """
+        Returns the dictionary for the language of the system. Unless strict,
+        returns another one if there is none (see pickDictionary).
+        """
         raise NotImplementedError
 
     @staticmethod
@@ -332,20 +370,13 @@ class EnchantDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not EnchantDictionary.isInstalled():
             return None
 
-        default_locale = enchant.get_default_language()
-        if default_locale and not enchant.dict_exists(default_locale):
-            default_locale = None
-
-        if default_locale == None:
-            default_locale = QLocale.system().name()
-        if default_locale == None:
-            default_locale = self.availableDictionaries()[0]
-
-        return default_locale
+        return pickDictionary(EnchantDictionary.availableDictionaries(),
+                              [enchant.get_default_language(), QLocale.system().name()],
+                              ["en_US"], strict)
 
     def isMisspelled(self, word):
         return not self._dict.check(word)
@@ -396,17 +427,12 @@ class PySpellcheckerDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not PySpellcheckerDictionary.isInstalled():
             return None
 
-        default_locale = QLocale.system().name()
-        if default_locale:
-            default_locale = default_locale[0:2]
-        if default_locale == None:
-            default_locale = "en"
-
-        return default_locale
+        return pickDictionary(PySpellcheckerDictionary.availableDictionaries(),
+                              [QLocale.system().name()], ["en"], strict)
 
     def isMisspelled(self, word):
         return len(self._dict.unknown([word])) > 0
@@ -489,11 +515,12 @@ class SymSpellDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not SymSpellDictionary.isInstalled():
             return None
 
-        return PySpellcheckerDictionary.getDefaultDictionary()
+        return pickDictionary(SymSpellDictionary.availableDictionaries(),
+                              [QLocale.system().name()], ["en"], strict)
 
     def isMisspelled(self, word):
         suggestions = self._dict.lookup(word.lower(), symspellpy.Verbosity.TOP)
@@ -673,22 +700,13 @@ class LanguageToolDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not LanguageToolDictionary.isInstalled():
             return None
 
-        default_locale = get_languagetool_locale_language()
-        tool = LanguageToolDictionary.getTool()
-
-        if default_locale and not default_locale in get_languagetool_languages(tool):
-            default_locale = None
-
-        if default_locale == None:
-            default_locale = QLocale.system().name()
-        if default_locale == None:
-            default_locale = self.availableDictionaries()[0]
-
-        return default_locale
+        return pickDictionary(LanguageToolDictionary.availableDictionaries(),
+                              [get_languagetool_locale_language(), QLocale.system().name()],
+                              ["en-US"], strict)
 
     def checkText(self, text):
         matches = []

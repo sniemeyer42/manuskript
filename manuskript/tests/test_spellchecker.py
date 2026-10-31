@@ -267,3 +267,112 @@ def test_symspellRemoveCustomWord(fakeSymspell):
     d.removeWord("Manuskript")
     assert not d.isCustomWord("Manuskript")
     assert [m.getWord(text) for m in d.checkText(text)] == ["Manuskript"]
+
+
+###############################################################################
+# Default dictionary
+###############################################################################
+
+class FakeQLocale:
+    localeName = "C"
+
+    @classmethod
+    def system(cls):
+        return cls()
+
+    def name(self):
+        return self.localeName
+
+
+def fakeEnchant(monkeypatch, available, default):
+    monkeypatch.setattr(S, "enchant", types.SimpleNamespace(
+        list_dicts=lambda: [(name, None) for name in available],
+        dict_exists=lambda name: name in available,
+        get_default_language=lambda: default))
+
+
+def fakeLocale(monkeypatch, name):
+    monkeypatch.setattr(FakeQLocale, "localeName", name)
+    monkeypatch.setattr(S, "QLocale", FakeQLocale)
+
+
+@pytest.mark.parametrize("default, locale, available, expected", [
+    ("de_DE", "de_DE", ["de_DE", "en_US"], "de_DE"),
+    (None, "C", ["de_DE", "en_US"], "en_US"),
+    ("fr_FR", "fr_FR", ["de_DE", "en_US"], "en_US"),
+    ("en_GB", "en_GB", ["de_DE", "en_US"], "en_US"),
+    ("de_AT", "de_AT", ["en_US", "de_DE"], "de_DE"),
+    (None, "fr_CA", ["fr_FR", "en_US"], "fr_FR"),
+    (None, "C", ["de_DE"], "de_DE"),
+    (None, "C", [], None),
+])
+def test_enchantDefaultDictionaryIsAvailable(monkeypatch, default, locale,
+                                             available, expected):
+    fakeEnchant(monkeypatch, available, default)
+    fakeLocale(monkeypatch, locale)
+    assert S.EnchantDictionary.getDefaultDictionary() == expected
+
+
+@pytest.mark.parametrize("locale, expected", [
+    ("de_AT", "de"),
+    ("C", "en"),
+    ("hu_HU", "en"),
+])
+def test_pyspellcheckerDefaultDictionaryIsAvailable(monkeypatch, fakeSymspell,
+                                                    locale, expected):
+    fakeLocale(monkeypatch, locale)
+    monkeypatch.setattr(S.PySpellcheckerDictionary, "availableDictionaries",
+                        staticmethod(lambda: ["de", "en", "fr"]))
+    assert S.PySpellcheckerDictionary.getDefaultDictionary() == expected
+
+
+def test_symspellDefaultDictionaryIsAvailable(monkeypatch, fakeSymspell):
+    # Only an "en" word list is installed (see fakeSymspell)
+    fakeLocale(monkeypatch, "C")
+    assert S.SymSpellDictionary.getDefaultDictionary() == "en"
+    assert S.SymSpellDictionary(S.SymSpellDictionary.getDefaultDictionary())
+
+
+def test_languageToolDefaultDictionaryIsAvailable(monkeypatch):
+    fakeLocale(monkeypatch, "en_GB")
+    monkeypatch.setattr(S, "use_language_check", False)
+    monkeypatch.setattr(S, "languagetool", types.SimpleNamespace(
+        utils=types.SimpleNamespace(get_locale_language=lambda: "en_GB")))
+    monkeypatch.setattr(S.LanguageToolDictionary, "isInstalled",
+                        staticmethod(lambda: True))
+    monkeypatch.setattr(S.LanguageToolDictionary, "availableDictionaries",
+                        staticmethod(lambda: ["auto", "de", "de-DE", "en",
+                                              "en-GB", "en-US"]))
+    assert S.LanguageToolDictionary.getDefaultDictionary() == "en-GB"
+
+
+@pytest.mark.parametrize("locale, enchantDictionaries, expected", [
+    # The language of the system in any library, before English
+    ("fr_FR", ["de_DE", "en_US"], "pyspellchecker:fr"),
+    ("de_DE", ["en_US"], "pyspellchecker:de"),
+    # In the library of highest priority that has the language
+    ("de_AT", ["de_DE", "en_US"], "PyEnchant:de_DE"),
+    ("en_GB", ["de_DE", "en_US"], "PyEnchant:en_US"),
+    # No library has it
+    ("hu_HU", ["de_DE", "en_US"], "PyEnchant:en_US"),
+    ("hu_HU", [], "pyspellchecker:en"),
+])
+def test_defaultDictionaryPrefersTheLanguage(monkeypatch, locale,
+                                             enchantDictionaries, expected):
+    fakeEnchant(monkeypatch, enchantDictionaries, locale)
+    fakeLocale(monkeypatch, locale)
+    monkeypatch.setattr(S, "pyspellchecker", types.SimpleNamespace())
+    monkeypatch.setattr(S.PySpellcheckerDictionary, "availableDictionaries",
+                        staticmethod(lambda: ["de", "en", "fr"]))
+    monkeypatch.setattr(S.Spellchecker, "implementations",
+                        [S.EnchantDictionary, S.PySpellcheckerDictionary])
+    assert S.Spellchecker.getDefaultDictionary() == expected
+
+
+def test_defaultDictionaryFallsBackToNextLibrary(monkeypatch, fakeSymspell):
+    fakeEnchant(monkeypatch, [], "en_US")
+    fakeLocale(monkeypatch, "en_US")
+    monkeypatch.setattr(S.Spellchecker, "implementations",
+                        [S.EnchantDictionary, S.SymSpellDictionary])
+    assert S.Spellchecker.getDefaultDictionary() == "symspellpy:en"
+    assert S.Spellchecker.getDictionary(None) is not None
