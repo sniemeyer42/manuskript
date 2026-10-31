@@ -3,6 +3,7 @@
 from PyQt5.QtCore import pyqtSignal, QTimer
 from PyQt5.QtWidgets import QWidget, qApp
 
+from manuskript.functions import toInt
 from manuskript.ui.editors.locker_ui import Ui_locker
 
 
@@ -15,7 +16,7 @@ class locker(QWidget, Ui_locker):
         QWidget.__init__(self, parent)
         self.setupUi(self)
         self._btnText = None
-        self._words = None
+        self._words = 0
         self._target = None
         self._blackout = []
 
@@ -76,7 +77,8 @@ class locker(QWidget, Ui_locker):
         return not self.isEnabled()
 
     def setWordCount(self, wc):
-        self._words = wc
+        # The model gives "" for texts without a word count yet
+        self._words = toInt(wc)
         if self.isLocked():
             self.updateBtnText()
             if self._target and self._words >= self._target:
