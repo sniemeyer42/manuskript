@@ -418,6 +418,10 @@ class abstractModel(QAbstractItemModel):
 
         return items
 
+    def isOwnMimeData(self, data):
+        """Returns True if data was made by this model's mimeData()."""
+        return bytes(data.data(_modelMimeType)) == self._mimeModelID
+
     def dropMimeData(self, data, action, row, column, parent):
 
         if action == Qt.IgnoreAction:
@@ -467,27 +471,33 @@ class abstractModel(QAbstractItemModel):
         # In case of copy actions, items might be duplicates, so we need new IDs.
         # But they might not be, if we cut, then paste. Paste is a Copy Action.
         # The first paste would not need new IDs. But subsequent ones will.
+        # Items moved from another model (e.g. from another Manuskript window)
+        # can have used IDs too. Moved within this model, they keep their IDs:
+        # Qt removes the original items after the drop.
 
-        # Recursively change the existing IDs to new, unique values. No need to strip out the old
-        # even if they are not duplicated in pasting. There is no practical need for ID conservation.
+        # Recursively check every copied item (children too, their IDs can be
+        # used even if their parent's ID is not), and change the IDs that are
+        # already used to new, unique values.
 
-        if action == Qt.CopyAction:
-            IDs = self.rootItem.listAllIDs()
+        if action == Qt.CopyAction or not self.isOwnMimeData(data):
+            IDs = set(self.rootItem.listAllIDs())
+
+            def removeUsedIDs(i):
+                if i.ID() in IDs:
+                    # Items don't get new IDs, because they are not part of a model yet,
+                    # so i.getUniqueID() would do nothing.
+                    # Instead we remove the ID, so that the item will receive a new one
+                    # when inserted within the model.
+                    i.setData(i.enum.ID, None)
+                elif i.ID():
+                    IDs.add(i.ID())
+                    # Reserve the ID, so that it is not given to another copied item
+                    self.updateAvailableIDs(i.ID())
+                for c in i.children():
+                    removeUsedIDs(c)
 
             for item in items:
-                if item.ID() in IDs:
-                    # Items don't get new IDs, because they are not part of a model yet,
-                    # so the following call does nothing:
-                    # item.getUniqueID(recursive=True)
-
-                    # Instead we need to remove IDs (recursively) in all copied items, so that they
-                    # will receive new ones when inserted within the model.
-                    def removeIDs(i):
-                        i.setData(item.enum.ID, None)
-                        for c in i.children():
-                            removeIDs(c)
-
-                    removeIDs(item)
+                removeUsedIDs(item)
 
         r = self.insertItems(items, beginRow, parent)
         return r

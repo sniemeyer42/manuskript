@@ -203,3 +203,97 @@ def test_emptyClipboard(MWSampleProject, monkeypatch):
     assert not view.actPaste.isEnabled()
     view.paste()
     assert model.rootItem.listAllIDs() == IDsBefore
+
+
+def test_pasteFolderWithCollidingChildIDs(outlineModelStandalone):
+    """
+    Pasting a folder whose own ID is free, but whose children's IDs are
+    already used, must not create duplicate IDs.
+    (Remaining part of https://github.com/olivierkes/manuskript/issues/324)
+    """
+    from manuskript.models.outlineModel import outlineModel
+    from manuskript.models import outlineItem
+    source = outlineModelStandalone
+    # Folder (ID 1) with Text A (ID 2) and Text B (ID 3)
+    mimeData = source.mimeData([source.indexFromItem(source.rootItem.child(0))])
+
+    # Other project, with IDs 2, 3 and 4 used, but not 1
+    model = outlineModel(None)
+    for title in ["x", "y", "z", "w"]:
+        outlineItem(title=title, _type="md", parent=model.rootItem)
+    model.removeRow(0)
+    assert model.rootItem.listAllIDs() == ["0", "2", "3", "4"]
+
+    assert model.dropMimeData(mimeData, Qt.CopyAction, -1, 0, QModelIndex())
+    assert duplicateIDs(model) == []
+    pasted = model.rootItem.child(3)
+    assert pasted.title() == "Folder"
+    assert [c.title() for c in pasted.children()] == ["Text A", "Text B"]
+    assert len(model.rootItem.listAllIDs()) == 7
+
+
+def test_pasteKeepsFreeIDsUnique(outlineModelStandalone):
+    """An unused ID kept by a pasted item must not be given to another
+    pasted item."""
+    from PyQt5.QtCore import QMimeData
+    model = outlineModelStandalone
+    assert model.nextAvailableID == 5
+    mimeData = QMimeData()
+    mimeData.setData("application/xml",
+        b'<outlineItems>'
+        b'<outlineItem ID="1" title="F" type="folder">'
+        b'<outlineItem ID="2" title="A" type="md"/>'
+        b'<outlineItem ID="5" title="B" type="md"/>'
+        b'</outlineItem>'
+        b'<outlineItem ID="6" title="C" type="md"/>'
+        b'</outlineItems>')
+
+    assert model.dropMimeData(mimeData, Qt.CopyAction, -1, 0, QModelIndex())
+    assert duplicateIDs(model) == []
+    assert len(model.rootItem.listAllIDs()) == 9
+
+
+def test_moveFromOtherModel(outlineModelStandalone):
+    """Items moved (drag and drop) from another model, e.g. from another
+    Manuskript window, get new IDs if theirs are already used."""
+    from manuskript.models.outlineModel import outlineModel
+    from manuskript.models import outlineItem
+    source = outlineModelStandalone
+    # Folder (ID 1) with Text A (ID 2) and Text B (ID 3)
+    mimeData = source.mimeData([source.indexFromItem(source.rootItem.child(0))])
+
+    model = outlineModel(None)
+    for title in ["x", "y", "z"]:
+        outlineItem(title=title, _type="md", parent=model.rootItem)
+    assert model.rootItem.listAllIDs() == ["0", "1", "2", "3"]
+
+    assert model.canDropMimeData(mimeData, Qt.MoveAction, -1, 0, QModelIndex())
+    assert model.dropMimeData(mimeData, Qt.MoveAction, -1, 0, QModelIndex())
+    assert duplicateIDs(model) == []
+    moved = model.rootItem.child(3)
+    assert [c.title() for c in moved.children()] == ["Text A", "Text B"]
+    assert len(model.rootItem.listAllIDs()) == 7
+
+
+def test_copyPasteAndDuplicateInSameProject(MWSampleProject):
+    """Copy / paste and duplicate of a folder in the same project give new
+    IDs to all copied items."""
+    MW = MWSampleProject
+    model = MW.mdlOutline
+    view = MW.treeRedacOutline
+    count = len(model.rootItem.listAllIDs())
+
+    # Chapter 10 (3 texts), pasted into Chapter 12
+    selectRows(view, ["29"])
+    view.copy()
+    selectRows(view, ["31"])
+    view.paste()
+    assert [c.title() for c in model.getItemByID("31").children()][-1] \
+           == "Chapter 10"
+    assert duplicateIDs(model) == []
+    assert len(model.rootItem.listAllIDs()) == count + 4
+
+    selectRows(view, ["29"])
+    view.duplicate()
+    assert duplicateIDs(model) == []
+    assert len(model.rootItem.listAllIDs()) == count + 8
