@@ -15,8 +15,10 @@ class characterSearchResultHighlighter(abstractSearchResultHighlighter):
 
     def openView(self, searchResult):
         r = Ref.characterReference(searchResult.id())
-        Ref.open(r)
+        if not Ref.open(r):
+            return False
         mainWindow().tabPersos.setEnabled(True)
+        return True
 
     def retrieveWidget(self, searchResult):
         textEditMap = {

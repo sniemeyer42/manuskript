@@ -13,6 +13,7 @@ class flatDataSearchResultHighlighter(abstractSearchResultHighlighter):
 
     def openView(self, searchResult):
         mainWindow().tabMain.setCurrentIndex(mainWindow().TabSummary)
+        return True
 
     def retrieveWidget(self, searchResult):
         editors = {

@@ -1061,6 +1061,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # Close open tabs in editor
         self.mainEditor.closeAllTabs()
 
+        # Search results refer to the items of the closed project
+        self.widget.clearResults()
+
         self.currentProject = None
         self.projectDirty = None
         QSettings().setValue("lastProject", "")

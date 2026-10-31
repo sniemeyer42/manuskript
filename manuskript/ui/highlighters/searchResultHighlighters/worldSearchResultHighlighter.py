@@ -15,8 +15,10 @@ class worldSearchResultHighlighter(abstractSearchResultHighlighter):
 
     def openView(self, searchResult):
         r = Ref.worldReference(searchResult.id())
-        Ref.open(r)
+        if not Ref.open(r):
+            return False
         mainWindow().tabWorld.setEnabled(True)
+        return True
 
     def retrieveWidget(self, searchResult):
         textEditMap = {

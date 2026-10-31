@@ -152,6 +152,10 @@ class search(QWidget, Ui_search):
                 # No results to generate if there is a problem with the regex
                 self.generateResultsLists(list())
 
+    def clearResults(self):
+        self.result.clear()
+        self.noResultsLabel.setVisible(False)
+
     def generateResultsLists(self, results):
         self.noResultsLabel.setVisible(len(results) == 0)
         for result in results:
