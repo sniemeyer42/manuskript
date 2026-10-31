@@ -2,7 +2,7 @@
 # --!-- coding: utf8 --!--
 import re
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QTextCursor, QFont, QFontMetrics
 from PyQt5.QtWidgets import QAction, qApp, QToolTip, QTextEdit
 
@@ -22,6 +22,12 @@ class MDEditCompleter(MDEditView):
         self.refRects = []
         self._noFocusMode = True
 
+        # Like the clickable things (see MDEditView.getClickRects), the
+        # references are scanned once text changes have settled.
+        self._refRectsTimer = QTimer(self)
+        self._refRectsTimer.setSingleShot(True)
+        self._refRectsTimer.setInterval(100)
+        self._refRectsTimer.timeout.connect(self.computeRefRects)
         self.textChanged.connect(self.getRefRects)
         self.document().documentLayoutChanged.connect(self.getRefRects)
 
@@ -113,6 +119,7 @@ class MDEditCompleter(MDEditView):
         MDEditView.mouseMoveEvent(self, event)
         self.endTooltipMoveEvent()
 
+        self.computePendingRefRects()
         onRef = [r for r in self.refRects if r.contains(event.pos())]
 
         if not onRef:
@@ -130,6 +137,7 @@ class MDEditCompleter(MDEditView):
 
     def mouseReleaseEvent(self, event):
         MDEditView.mouseReleaseEvent(self, event)
+        self.computePendingRefRects()
         onRef = [r for r in self.refRects if r.contains(event.pos())]
         if onRef:
             cursor = self.cursorForPosition(event.pos())
@@ -143,6 +151,25 @@ class MDEditCompleter(MDEditView):
         self.getRefRects()
 
     def getRefRects(self):
+        """
+        Schedules an update of the references' rects (see computeRefRects).
+        Called on every text change and highlighter pass, so the actual
+        computation is debounced.
+        """
+        # Can be called by MDEditView.__init__, before the timer exists.
+        timer = getattr(self, "_refRectsTimer", None)
+        if timer is not None:
+            timer.start()
+
+    def computePendingRefRects(self):
+        """
+        Computes the references' rects right away if an update is pending.
+        """
+        if self._refRectsTimer.isActive():
+            self._refRectsTimer.stop()
+            self.computeRefRects()
+
+    def computeRefRects(self):
         cursor = self.textCursor()
         f = self.font()
         f.setFixedPitch(True)

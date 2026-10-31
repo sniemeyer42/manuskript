@@ -7,7 +7,7 @@ from PyQt5.QtCore import QRegExp, Qt, QTimer, QRect, QPoint
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import qApp, QToolTip
 
-from manuskript.ui.views.textEditView import textEditView
+from manuskript.ui.views.textEditView import textEditView, PLAIN_TRANSLATION_TABLE
 from manuskript.ui.highlighters import MarkdownHighlighter
 from manuskript import settings
 from manuskript.ui.highlighters.markdownEnums import MarkdownState as MS
@@ -47,6 +47,12 @@ class MDEditView(textEditView):
 
         # Clickable things
         self.clickRects = []
+        # Computing them is costly, so it is done once text changes,
+        # scrolling and resizing have settled (see getClickRects).
+        self._clickRectsTimer = QTimer(self)
+        self._clickRectsTimer.setSingleShot(True)
+        self._clickRectsTimer.setInterval(100)
+        self._clickRectsTimer.timeout.connect(self.computeClickRects)
         self.textChanged.connect(self.getClickRects)
         self.document().documentLayoutChanged.connect(self.getClickRects)
         self.setMouseTracking(True)
@@ -463,12 +469,37 @@ class MDEditView(textEditView):
 
     def getClickRects(self):
         """
-        Parses the whole texte to catch clickable things: links and images.
-        Stores the result so that it can be used elsewhere.
+        Schedules an update of the clickable things (see computeClickRects).
+        Called on every text change, highlighter pass, scroll step and resize,
+        so the actual computation is debounced.
+        """
+        # Can be called by textEditView.__init__, before the timer exists.
+        timer = getattr(self, "_clickRectsTimer", None)
+        if timer is not None:
+            timer.start()
+
+    def computeClickRects(self):
+        """
+        Parses the visible part of the text to catch clickable things: links
+        and images. Stores the result so that it can be used elsewhere.
         """
         cursor = self.textCursor()
         refs = []
-        text = self.toPlainText()
+        # Only what is shown in the viewport can be clicked, and the rects
+        # are recomputed after scrolling or resizing. Clickable things never
+        # span several paragraphs, so we parse whole visible blocks.
+        viewport = self.viewport().rect()
+        start = self.cursorForPosition(viewport.topLeft()).block().position()
+        last = self.cursorForPosition(viewport.bottomRight()).block()
+        # Like toPlainText(), for the visible blocks only. (Slicing it with
+        # document positions would be off after characters outside the BMP,
+        # e.g. emojis, which take two positions.)
+        cursor.setPosition(start)
+        cursor.setPosition(last.position() + last.length() - 1,
+                           QTextCursor.KeepAnchor)
+        text = cursor.selectedText()
+        for char, replacement in PLAIN_TRANSLATION_TABLE.items():
+            text = text.replace(chr(char), replacement)
         for rx in [
                 self.imageRegex,
                 self.automaticLinkRegex,
@@ -476,10 +507,10 @@ class MDEditView(textEditView):
             ]:
             pos = 0
             while rx.indexIn(text, pos) != -1:
-                cursor.setPosition(rx.pos())
+                cursor.setPosition(start + rx.pos())
                 r1 = self.cursorRect(cursor)
                 pos = rx.pos() + rx.matchedLength()
-                cursor.setPosition(pos)
+                cursor.setPosition(start + pos)
                 r2 = self.cursorRect(cursor)
                 if r1.top() == r2.top():
                     ct = ClickThing(
@@ -493,7 +524,7 @@ class MDEditView(textEditView):
                     r2.setLeft(self.viewport().geometry().left())
                     refs.append(ClickThing(r2, rx, rx.capturedTexts()))
                     # We check for middle lines
-                    cursor.setPosition(rx.pos())
+                    cursor.setPosition(start + rx.pos())
                     cursor.movePosition(cursor.Down)
                     while self.cursorRect(cursor).top() != r2.top():
                         r3 = self.cursorRect(cursor)
@@ -507,6 +538,15 @@ class MDEditView(textEditView):
 
         self.clickRects = refs
 
+    def computePendingClickRects(self):
+        """
+        Computes the clickable things right away if an update is pending,
+        e.g. when the mouse is used right after scrolling.
+        """
+        if self._clickRectsTimer.isActive():
+            self._clickRectsTimer.stop()
+            self.computeClickRects()
+
     def mouseMoveEvent(self, event):
         """
         When mouse moves, we show tooltip when appropriate.
@@ -515,6 +555,7 @@ class MDEditView(textEditView):
         textEditView.mouseMoveEvent(self, event)
         self.endTooltipMoveEvent()
 
+        self.computePendingClickRects()
         onRect = [r for r in self.clickRects if r.rect.contains(event.pos())]
 
         if not onRect:
@@ -545,6 +586,7 @@ class MDEditView(textEditView):
 
     def mouseReleaseEvent(self, event):
         textEditView.mouseReleaseEvent(self, event)
+        self.computePendingClickRects()
         onRect = [r for r in self.clickRects if r.rect.contains(event.pos())]
         if onRect and event.modifiers() & Qt.ControlModifier:
             ct = onRect[0]
