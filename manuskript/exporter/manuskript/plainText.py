@@ -154,6 +154,11 @@ class plainText(basicFormat):
         last = None
         for c in item.children():
 
+            # Excluded or empty items must not add a separator
+            child = self.concatenate(c, settings)
+            if not child:
+                continue
+
             # Separator
             if last:
                 # Between folder
@@ -169,7 +174,7 @@ class plainText(basicFormat):
                 elif last == "md" and c.type() == "folder":
                     content += s["Separator"]["TF"]
 
-            content += self.concatenate(c, settings)
+            content += child
 
             last = c.type()
 

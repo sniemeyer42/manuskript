@@ -63,3 +63,14 @@ def test_ignoreCompileIncludesEverything(plainText, chapter):
     assert "Text 1." in out
     assert "Text 2." in out
     assert "Text 3." in out
+
+
+def test_noDoubleSeparatorForExcludedItems(plainText, chapter):
+    f, w = plainText
+    # Custom scene separator, no text titles
+    w.cmbSepTT.setCurrentIndex(1)
+    w.txtSepTT.setText("\\n* * *\\n")
+    w.tblContent.item(1, 1).setCheckState(0)
+    out = f.output(w)
+    assert out == "Chapter 1\nText 1.\n\n* * *\nText 3.\n"
+    assert out.count("* * *") == 1
