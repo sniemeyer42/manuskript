@@ -519,3 +519,23 @@ def test_dictionaryMenuDoesNotPileUpActions(dictionaryMenu):
     MW.updateMenuDict()
     assert len(MW.menuDictGroup.actions()) == 4
     assert checkedDictionaries(MW) == [("Other", "cc_CC")]
+
+
+def test_dictionaryMenuKeepsLegacyDictionaryName(dictionaryMenu):
+    from manuskript import settings
+    MW = dictionaryMenu
+
+    # Stored by older versions (and in the sample projects) without library
+    settings.dict = "bb_BB"
+    MW.updateMenuDict()
+    assert settings.dict == "Fake:bb_BB"
+    assert checkedDictionaries(MW) == [("Fake", "bb_BB")]
+
+    settings.dict = "cc_CC"
+    MW.updateMenuDict()
+    assert settings.dict == "Other:cc_CC"
+
+    # Not installed: falls back to the default dictionary
+    settings.dict = "zz_ZZ"
+    MW.updateMenuDict()
+    assert settings.dict == "Fake:aa_AA"

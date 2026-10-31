@@ -1781,6 +1781,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if settings.dict is None:
             settings.dict = Spellchecker.getDefaultDictionary()
 
+        # Older versions stored the dictionary name without the library name
+        if settings.dict and ":" not in settings.dict:
+            for lib, dicts in dictionaries.items():
+                if settings.dict in dicts:
+                    settings.dict = Spellchecker.normalizeDictName(lib, settings.dict)
+                    break
+
         # Check if project dict is unavailable on this machine
         dict_available = False
         for lib, dicts in dictionaries.items():
