@@ -21,15 +21,6 @@ def addItem(parent, title, text=None, compile=True):
 
 
 @pytest.fixture
-def exporterSettingsPath(monkeypatch, tmp_path):
-    """Keeps exporter.ini out of the user's data folder."""
-    from manuskript.ui.exporters.manuskript.plainTextSettings import exporterSettings
-    path = str(tmp_path / "exporter.ini")
-    monkeypatch.setattr(exporterSettings, "getSettingsPath", lambda self: path)
-    return path
-
-
-@pytest.fixture
 def plainText(MWEmptyProject, exporterSettingsPath):
     from manuskript.exporter.manuskript.plainText import plainText
     f = plainText()

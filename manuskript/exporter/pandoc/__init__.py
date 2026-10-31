@@ -103,13 +103,14 @@ class pandocExporter(basicExporter):
             err = "%s on export\n" % err_type \
                 + "Return code: %d\n" % p.returncode \
                 + "Command and parameters:\n%s\n" % p.args \
-                + "Stderr content:\n" + stderr.decode("utf-8")
+                + "Stderr content:\n" + stderr.decode("utf-8", errors="replace")
             if p.returncode != 0:
                 LOGGER.error(err)
                 QMessageBox.critical(mainWindow().dialog, safeTranslate(qApp, "Export", "Error"), err)
+                return None
             else:
+                # Only warnings (e.g. duplicate note references): keep the output
                 LOGGER.warning(err)
-            return None
 
         return stdout.decode("utf-8")
 
