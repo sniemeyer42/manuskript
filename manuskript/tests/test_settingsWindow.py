@@ -304,3 +304,41 @@ def test_autoSaveTimer(MWSampleProject, monkeypatch):
     assert MW.saveTimerNoChanges.isActive()
     SW.chkAutoSaveNoChanges.setChecked(False)
     assert not MW.saveTimerNoChanges.isActive()
+
+
+def test_themeEditorConnections(MWSampleProject, monkeypatch):
+    """Editing a theme several times does not duplicate the signal handlers."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog
+    from manuskript.settingsWindow import settingsWindow
+    SW = settingsWindow(MWSampleProject)
+
+    calls = []
+    monkeypatch.setattr(QColorDialog, "getColor",
+                        lambda *args, **kwargs: calls.append(1) or QColor("#123456"))
+
+    count = SW.lstThemes.count()
+    SW.newTheme()
+    assert SW.lstThemes.count() == count + 1
+    item = SW.lstThemes.item(count)
+    try:
+        receivers = None
+        for i in range(3):
+            SW.lstThemes.setCurrentItem(item)
+            SW.editTheme()
+            spinReceivers = SW.spnThemeTextWidth.receivers(
+                SW.spnThemeTextWidth.valueChanged)
+            if receivers is None:
+                receivers = spinReceivers
+            assert spinReceivers == receivers
+
+            calls.clear()
+            SW.btnThemWindowBackgroundColor.click()
+            assert len(calls) == 1
+            assert SW._themeData["Background/Color"] == "#123456"
+            SW.cancelEdit()
+    finally:
+        SW.lstThemes.setCurrentItem(item)
+        SW.removeTheme()
+    assert SW.lstThemes.count() == count

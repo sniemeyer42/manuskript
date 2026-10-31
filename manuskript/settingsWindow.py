@@ -312,6 +312,7 @@ class settingsWindow(QWidget, Ui_Settings):
 
         # Fullscreen
         self._editingTheme = None
+        self._themeEditorConnected = False
         self.btnThemeEditOK.setIcon(qApp.style().standardIcon(QStyle.SP_DialogApplyButton))
         self.btnThemeEditOK.clicked.connect(self.saveTheme)
         self.btnThemeEditCancel.setIcon(qApp.style().standardIcon(QStyle.SP_DialogCancelButton))
@@ -864,13 +865,37 @@ class settingsWindow(QWidget, Ui_Settings):
         self._themeData = loadThemeDatas(theme)
 
         # Window Background
-        self.btnThemWindowBackgroundColor.clicked.connect(lambda: self.getThemeColor("Background/Color"))
         try:
             self.cmbThemeBackgroundImage.disconnect()
         except:
             pass
         self.populatesCmbBackgrounds(self.cmbThemeBackgroundImage)
         self.cmbThemeBackgroundImage.currentIndexChanged.connect(self.updateThemeBackground)
+
+        # Text Options
+        try:
+            self.cmbThemeFontSize.currentIndexChanged.disconnect(self.updateThemeFont)
+        except:
+            pass
+        self.populatesFontSize()
+        self.cmbThemeFontSize.currentIndexChanged.connect(self.updateThemeFont)
+
+        # loadTheme() runs each time a theme is edited: connect the other
+        # widgets only once, their handlers use the current self._themeData.
+        if not self._themeEditorConnected:
+            self._themeEditorConnected = True
+            self.connectThemeEditor()
+
+        # Update UI
+        self.updateUIFromTheme()
+
+        # Generate preview
+        self._loadingTheme = False
+        self.updatePreview()
+
+    def connectThemeEditor(self):
+        # Window Background
+        self.btnThemWindowBackgroundColor.clicked.connect(lambda: self.getThemeColor("Background/Color"))
         self.cmbThemBackgroundType.currentIndexChanged.connect(lambda i: self.setSetting("Background/Type", i))
 
         # Text Background
@@ -885,30 +910,16 @@ class settingsWindow(QWidget, Ui_Settings):
         # Text Options
         self.btnThemeTextColor.clicked.connect(lambda: self.getThemeColor("Text/Color"))
         self.cmbThemeFont.currentFontChanged.connect(self.updateThemeFont)
-        try:
-            self.cmbThemeFontSize.currentIndexChanged.disconnect(self.updateThemeFont)
-        except:
-            pass
-        self.populatesFontSize()
-        self.cmbThemeFontSize.currentIndexChanged.connect(self.updateThemeFont)
         self.btnThemeMisspelledColor.clicked.connect(lambda: self.getThemeColor("Text/Misspelled"))
 
         # Paragraph Options
         self.chkThemeIndent.stateChanged.connect(lambda v: self.setSetting("Spacings/IndentFirstLine", v != 0))
         self.cmbThemeAlignment.currentIndexChanged.connect(lambda i: self.setSetting("Spacings/Alignment", i))
         self.cmbThemeLineSpacing.currentIndexChanged.connect(self.updateLineSpacing)
-        self.cmbThemeLineSpacing.currentIndexChanged.connect(self.updateLineSpacing)
         self.spnThemeLineSpacing.valueChanged.connect(lambda v: self.setSetting("Spacings/LineSpacing", v))
         self.spnThemeParaAbove.valueChanged.connect(lambda v: self.setSetting("Spacings/ParagraphAbove", v))
         self.spnThemeParaBelow.valueChanged.connect(lambda v: self.setSetting("Spacings/ParagraphBelow", v))
         self.spnThemeTabWidth.valueChanged.connect(lambda v: self.setSetting("Spacings/TabWidth", v))
-
-        # Update UI
-        self.updateUIFromTheme()
-
-        # Generate preview
-        self._loadingTheme = False
-        self.updatePreview()
 
     def setSetting(self, key, val):
         self._themeData[key] = val
