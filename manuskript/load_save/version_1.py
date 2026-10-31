@@ -6,6 +6,7 @@
 # (except for some elements), allowing collaborative work
 # versioning and third-party editing.
 
+import errno
 import os
 import re
 import shutil
@@ -89,6 +90,13 @@ def formatMetaData(name, value, tabLength=10):
     )
 
 
+# File names are made from titles. They are truncated to stay below the file system
+# limit of 255 bytes per file name, and to keep paths short (Windows limits paths to
+# 260 characters, see #313). They stay unique because they start with the item's row
+# (or the character's ID).
+maxSlugLength = 64
+
+
 def slugify(name):
     """
     A basic slug function, that escapes all spaces to "_" and all non letters/digits to "-".
@@ -105,6 +113,44 @@ def slugify(name):
         else:
             newName += "-"
     return newName
+
+
+def writeFile(filename, content):
+    """
+    Writes content (str or bytes) to filename, through a temporary file that replaces it only
+    once it has been written completely: if writing fails (disk full, quota...), the previous
+    version of the file is left untouched, and no truncated file is left behind.
+    A symbolic link is written through (its target is replaced), and the mode of an existing
+    file is kept. A file that is not writable is not replaced.
+    @raise OSError: if the file cannot be written.
+    """
+    filename = os.path.realpath(filename)
+    if os.path.exists(filename) and not os.access(filename, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), filename)
+
+    # Hidden, so that a temporary file left by a crash is not loaded as part of the project
+    tmp = os.path.join(os.path.dirname(filename), "." + os.path.basename(filename) + ".tmp")
+    try:
+        if type(content) == bytes:
+            with open(tmp, "wb") as f:
+                f.write(content)
+        else:
+            with open(tmp, "wt", encoding="utf8", newline="\n") as f:
+                f.write(content)
+        if os.path.exists(filename):
+            # Best effort: some file systems do not support chmod (network or FUSE mounts...)
+            try:
+                shutil.copymode(filename, tmp)
+            except OSError as e:
+                LOGGER.debug("Cannot keep the mode of %s: %s", filename, e)
+        os.replace(tmp, filename)
+
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def saveProject(zip=None):
@@ -249,7 +295,7 @@ def saveProject(zip=None):
         # generate file's path
         cpath = path.format(name="{ID}-{slugName}".format(
             ID=c.ID(),
-            slugName=slugify(c.name())
+            slugName=slugify(c.name())[:maxSlugLength]
         ))
 
         # Has the character been renamed?
@@ -402,40 +448,58 @@ def saveProject(zip=None):
         # Writing files
         for path, content in files:
             filename = os.path.join(dir, folder, path)
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
 
             # Check if content is in cache, and write if necessary
             # (also if the file has disappeared from disk since it was cached)
             if path not in cache or cache[path] != content or not os.path.exists(filename):
                 LOGGER.debug("* Writing file {} ({})".format(path, "not in cache" if path not in cache else "different"))
-                # mode = "w" + ("b" if type(content) == bytes else "")
-                if type(content) == bytes:
-                    try:
-                        with open(filename, "wb") as f:
-                            f.write(content)
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + " for writing: " + e.strerror)
-                        filesWithPermissionErrors.append(filename)
-                else:
-                    try:
-                        with open(filename, "wt", encoding="utf8", newline="\n") as f:
-                            f.write(content)
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + " for writing: " + e.strerror)
-                        filesWithPermissionErrors.append(filename)
+                # Any error (permission, name too long, disk full...) is reported, and must not
+                # stop the other files from being written.
+                try:
+                    os.makedirs(os.path.dirname(filename), exist_ok=True)
+                    writeFile(filename, content)
+                    cache[path] = content
 
-                cache[path] = content
+                except OSError as e:
+                    LOGGER.error("Cannot write file %s: %s", filename, e)
+                    filesWithPermissionErrors.append("{} ({})".format(filename, e.strerror or e))
+                    # The file on disk is not up to date: it must be written next time.
+                    if path in cache:
+                        cache[path] = None
 
         # Removing phantoms (files of items that have been removed, renamed or moved)
         written = {p.lower(): p for p, c in files}
         phantoms = [p for p in cache if p not in [p for p, c in files]]
-        if phantoms and filesWithPermissionErrors:
-            # Not if a file could not be written: the old file of a renamed or moved item is
-            # then the only copy of its content. Old files stay on disk and in the cache, so
-            # that the next save removes them (once the new files have been written).
-            LOGGER.warning("Some files could not be written, %d old files are not removed.",
-                           len(phantoms))
-            phantoms = []
+
+        # The old files of a renamed or moved item are not removed if its new files could not
+        # all be written: they are then the only copy of its content. They stay on disk and in
+        # the cache, and the item keeps its old path, so that the next save handles it as
+        # moved again (and removes the old files once the new ones have been written).
+        # The old files of removed items, and of the items written at their new place, are
+        # removed even if other files could not be written.
+        failed = [p for p, c in files if cache.get(p) != c]
+        # A folder whose folder.txt could not be written is not loaded, nor anything in it:
+        # the items written into it have not been written either.
+        unloadable = [os.path.dirname(f) for f in failed if os.path.basename(f) == "folder.txt"
+                      and not os.path.exists(os.path.join(dir, folder, f))]
+        notMoved = {new: old for old, new in moves
+                    if any(f == new or f.startswith(new + os.sep) for f in failed)
+                    or any(new.startswith(u + os.sep) for u in unloadable)}
+        if notMoved:
+            LOGGER.warning("Some files could not be written, the old files of %d renamed or "
+                           "moved items are not removed.", len(notMoved))
+            phantoms = [p for p in phantoms if not any(
+                p == old or p.startswith(old + os.sep) for old in notMoved.values())]
+
+            for c in mw.mdlCharacter.characters:
+                c.lastPath = notMoved.get(c.lastPath, c.lastPath)
+
+            def keepOldPath(item):
+                for child in item.children():
+                    child._lastPath = notMoved.get(child._lastPath, child._lastPath)
+                    keepOldPath(child)
+
+            keepOldPath(mw.mdlOutline.rootItem)
 
         for path in phantoms:
             filename = os.path.join(dir, folder, path)
@@ -452,6 +516,13 @@ def saveProject(zip=None):
             try:
                 if isWrittenFile:
                     LOGGER.debug("* Not removing %s: it is the same file as %s", path, same)
+
+                elif os.path.basename(path) == "folder.txt" and any(
+                        u.startswith(os.path.dirname(path) + os.sep) for u in notMoved.values()):
+                    # Without it, the old files kept above would no longer be loaded.
+                    LOGGER.warning("* Not removing %s: its folder holds files that could not be "
+                                   "moved", path)
+                    continue
 
                 elif os.path.isdir(filename):
                     LOGGER.debug("* Removing %s", path)
@@ -482,22 +553,22 @@ def saveProject(zip=None):
 
         # Write the project file's content
         try:
-            with open(project, "wt", encoding="utf8", newline="\n") as f:
-                f.write("1")  # Format number
-        except PermissionError as e:
-            LOGGER.error("Cannot open file " + project + " for writing: " + e.strerror)
-            filesWithPermissionErrors.append(project)
+            writeFile(project, "1")  # Format number
+        except OSError as e:
+            LOGGER.error("Cannot write file %s: %s", project, e)
+            filesWithPermissionErrors.append("{} ({})".format(project, e.strerror or e))
 
         if len(filesWithPermissionErrors) > 0:
             dlg = ListDialog(mw)
             dlg.setModal(True)
             dlg.setWindowTitle(dlg.tr("Files not saved"))
-            dlg.label.setText(dlg.tr("The following files were not saved and appear to be open in another program"))
+            dlg.label.setText(dlg.tr("The following files could not be saved:"))
             for f in filesWithPermissionErrors:
                 QListWidgetItem(f, dlg.listWidget)
             dlg.open()
 
-        if project in filesWithPermissionErrors:
+        # Some files have not been written: the project is not (completely) saved.
+        if filesWithPermissionErrors:
             return False
         return True
 
@@ -667,7 +738,7 @@ def outlineItemPath(item):
 
         name = "{ID}-{name}{ext}".format(
             ID=str(item.row()).zfill(len(str(siblings))),
-            name=slugify(title),
+            name=slugify(title)[:maxSlugLength],
             ext="" if item.type() == "folder" else ".md"
         )
         return outlineItemPath(item.parent()) + [name]

@@ -4,6 +4,9 @@
 """Regression tests for saving and loading projects (loadSave version_1)."""
 
 import os
+import shutil
+
+import pytest
 
 from manuskript import loadSave
 from manuskript.enums import Outline
@@ -229,3 +232,173 @@ def test_ui_refuses_non_project_folder(MW, tmp_path, monkeypatch):
 
     assertFolderUnchanged(target, files)
     assert not os.path.exists(target + ".msk")
+
+
+def lastText(MW):
+    """Returns the last text item of the outline (the last one to be saved)."""
+    items = []
+
+    def rec(item):
+        for c in item.children():
+            items.append(c)
+            rec(c)
+
+    rec(MW.mdlOutline.rootItem)
+    return [i for i in items if i.isText()][-1]
+
+
+def test_long_titles(sampleProject):
+    """Very long titles must not make the save fail (file name too long, #313)."""
+    MW = sampleProject
+    mdl = MW.mdlOutline
+    scene = mdl.rootItem.child(0).child(0).child(0)
+    mdl.setData(scene.index(Outline.title), "A very long title" * 20)
+    MW.mdlCharacter.characters[0].setName("A very long name" * 20)
+    mdl.setData(lastText(MW).index(Outline.text), "Text written today")
+    names = characters(MW)
+
+    before, after = reload(MW)
+    assert after == before
+    assert characters(MW) == names
+
+
+def test_failed_write_keeps_previous_file(sampleProject, monkeypatch):
+    """When writing a file fails half way (disk full, quota), its previous version is kept
+    and no truncated or temporary file is left."""
+    import errno
+    from manuskript.load_save import version_1
+    MW = sampleProject
+    scene = lastText(MW)
+    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
+    with open(filename, encoding="utf8") as f:
+        previous = f.read()
+    filesBefore = sorted(os.listdir(os.path.dirname(filename)))
+    MW.mdlOutline.setData(scene.index(Outline.text), "Text written today")
+
+    class FullDisk:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.f.close()
+
+        def write(self, data):
+            self.f.write(data[:len(data) // 2])
+            self.f.flush()
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    realOpen = open
+
+    def fullDiskOpen(file, mode="r", *args, **kwargs):
+        f = realOpen(file, mode, *args, **kwargs)
+        if "w" in mode and os.path.basename(filename) in os.path.basename(file):
+            return FullDisk(f)
+        return f
+
+    monkeypatch.setattr(version_1, "open", fullDiskOpen, raising=False)
+    assert not loadSave.saveProject()
+    monkeypatch.undo()
+
+    with open(filename, encoding="utf8") as f:
+        assert f.read() == previous
+    assert sorted(os.listdir(os.path.dirname(filename))) == filesBefore
+
+    assert loadSave.saveProject()
+    with open(filename, encoding="utf8") as f:
+        assert f.read().endswith("Text written today")
+
+
+def test_save_keeps_symlinks_and_modes(sampleProject, tmp_path):
+    """A file that is a symbolic link is written through the link, and the mode of the
+    files that are replaced is kept."""
+    import stat
+    MW = sampleProject
+    scene = lastText(MW)
+    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
+    target = os.path.join(str(tmp_path), "elsewhere.md")
+    shutil.move(filename, target)
+    try:
+        os.symlink(target, filename)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+    os.chmod(target, 0o600)
+    os.chmod(MW.currentProject, 0o600)
+
+    MW.mdlOutline.setData(scene.index(Outline.text), "Text written today")
+    assert loadSave.saveProject()
+
+    assert os.path.islink(filename)
+    with open(target, encoding="utf8") as f:
+        assert f.read().endswith("Text written today")
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(MW.currentProject).st_mode) == 0o600
+
+
+def test_read_only_file_is_not_replaced(sampleProject):
+    """A file that is not writable is reported as not saved, it is not replaced."""
+    MW = sampleProject
+    scene = lastText(MW)
+    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
+    with open(filename, encoding="utf8") as f:
+        previous = f.read()
+    os.chmod(filename, 0o444)
+    try:
+        if os.access(filename, os.W_OK):
+            pytest.skip("cannot make a file read-only (running as root?)")
+        MW.mdlOutline.setData(scene.index(Outline.text), "Text written today")
+        assert not loadSave.saveProject()
+        with open(filename, encoding="utf8") as f:
+            assert f.read() == previous
+    finally:
+        os.chmod(filename, 0o644)
+    assert loadSave.saveProject()
+
+
+def test_save_without_chmod_support(sampleProject, monkeypatch):
+    """On file systems that do not support chmod (some network or FUSE mounts), the files
+    are saved without keeping their mode."""
+    import errno
+    MW = sampleProject
+    scene = lastText(MW)
+    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
+
+    def chmod(path, *args, **kwargs):
+        raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP), path)
+
+    monkeypatch.setattr(os, "chmod", chmod)
+    MW.mdlOutline.setData(scene.index(Outline.text), "Text written today")
+    assert loadSave.saveProject()
+    monkeypatch.undo()
+    with open(filename, encoding="utf8") as f:
+        assert f.read().endswith("Text written today")
+    assert not [f for f in os.listdir(os.path.dirname(filename)) if f.endswith(".tmp")]
+
+
+def test_write_error_does_not_stop_save(sampleProject):
+    """A file that cannot be written is reported, the other files are still written."""
+    MW = sampleProject
+    mdl = MW.mdlOutline
+    folder = MW.currentProject[:-4]
+    first = mdl.rootItem.child(0).child(0).child(0)
+    last = lastText(MW)
+
+    # Something prevents writing the first scene's file (here: a folder with that name)
+    path = os.path.join(folder, first._lastPath)
+    os.remove(path)
+    os.mkdir(path)
+    open(os.path.join(path, "file"), "w").close()
+    mdl.setData(first.index(Outline.text), "Not saved")
+    mdl.setData(last.index(Outline.text), "Text written today")
+
+    assert not loadSave.saveProject()
+    with open(os.path.join(folder, last._lastPath), encoding="utf8") as f:
+        assert f.read().endswith("Text written today")
+
+    # The problem is fixed: the next save writes the file
+    shutil.rmtree(path)
+    assert loadSave.saveProject()
+    with open(path, encoding="utf8") as f:
+        assert f.read().endswith("Not saved")

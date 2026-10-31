@@ -4,10 +4,12 @@
 """Regression tests: moving / renaming / duplicating outline items must not lose data
 when the project is saved as a folder (loadSave version_1)."""
 
+import pytest
+
 from manuskript import loadSave
 from manuskript.enums import Outline
 
-from manuskript.tests.load_save.helpers import addItem, drag, duplicate, reload
+from manuskript.tests.load_save.helpers import addItem, drag, duplicate, reload, tree
 
 
 def test_reorder_titles_with_same_slug(emptyProject):
@@ -171,3 +173,148 @@ def test_failed_write_keeps_old_files_of_renamed_folder(sampleProject, monkeypat
     before, after = reload(MW)
     assert after == before
     assert not os.path.exists(oldFolder)
+
+
+def test_failed_write_removes_other_old_files(sampleProject, monkeypatch):
+    """When some files cannot be written, only the old files of the items that could not be
+    written at their new place are kept. The old files of removed items, and of renamed items
+    that have been written, are removed: they must not come back (as duplicates) when the
+    project is closed without saving, or after a crash."""
+    import os
+    from manuskript.load_save import version_1
+    MW = sampleProject
+    path = MW.currentProject
+    folder = path[:-4]
+    root = MW.mdlOutline.rootItem
+    part1, part2 = root.child(0), root.child(1)
+    chapters1 = [c.title() for c in part1.children()]
+    chapters2 = [c.title() for c in part2.children()]
+
+    # A renamed chapter and a removed chapter, which are written
+    MW.mdlOutline.setData(part1.child(0).index(Outline.title), "Prologue")
+    MW.mdlOutline.removeIndex(part1.child(part1.childCount() - 1).index())
+    # A renamed chapter whose new files cannot be written
+    chapter = part2.child(0)
+    MW.mdlOutline.setData(chapter.index(Outline.title), "Not written")
+    oldFolder = os.path.join(folder, chapter._lastPath)
+    newFolder = os.path.realpath(os.path.join(folder, *version_1.outlineItemPath(chapter)))
+    realOpen = open
+
+    def failingOpen(file, mode="r", *args, **kwargs):
+        if "w" in mode and os.path.realpath(file).startswith(newFolder + os.sep):
+            raise PermissionError(13, "Permission denied", file)
+        return realOpen(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(version_1, "open", failingOpen, raising=False)
+    assert not loadSave.saveProject()
+    # Its old files are still kept by the next save
+    assert not loadSave.saveProject()
+    monkeypatch.undo()
+    assert os.path.isfile(os.path.join(oldFolder, "folder.txt"))
+
+    # Closed without saving
+    MW.projectDirty = False
+    MW.closeProject()
+    MW.loadProject(path)
+    root = MW.mdlOutline.rootItem
+    assert [c.title() for c in root.child(0).children()] == ["Prologue"] + chapters1[1:-1]
+    assert [c.title() for c in root.child(1).children()] == chapters2
+
+
+def _ids(item):
+    out = [item.ID()]
+    for c in item.children():
+        out += _ids(c)
+    return out
+
+
+def _reopenWithoutSaving(MW):
+    """Like 'Discard' (or a crash) after a failed save, then opening the project again."""
+    path = MW.currentProject
+    MW.projectDirty = False
+    MW.closeProject()
+    MW.loadProject(path)
+    assert MW.currentProject == path
+    return set(i[1] for i in tree(MW))
+
+
+def _failWritesUnder(monkeypatch, newFolder):
+    import os
+    from manuskript.load_save import version_1
+    realWrite = version_1.writeFile
+
+    def failingWrite(filename, content, *args, **kwargs):
+        if os.path.realpath(filename).startswith(newFolder + os.sep):
+            raise OSError(28, "No space left on device", filename)
+        return realWrite(filename, content, *args, **kwargs)
+
+    monkeypatch.setattr(version_1, "writeFile", failingWrite)
+
+
+@pytest.mark.parametrize("action", ["delete", "rename"])
+def test_failed_write_keeps_items_moved_out_of_a_changed_parent(sampleProject, monkeypatch,
+                                                                action):
+    """A chapter is dragged out of a part, and the part is deleted (or renamed). When the new
+    files of the chapter cannot be written, its old files are kept: the folder.txt of its old
+    part must be kept too, or the old files are no longer loaded (the loader skips folders
+    without folder.txt), and the chapter is lost when the project is closed without saving."""
+    import os
+    from manuskript.load_save import version_1
+    MW = sampleProject
+    folder = MW.currentProject[:-4]
+    root = MW.mdlOutline.rootItem
+    source, target = root.child(0), root.child(1)
+    chapter = source.child(0)
+    movedIDs = _ids(chapter)
+    oldFolder = os.path.join(folder, chapter._lastPath)
+
+    drag(MW, chapter, target, target.childCount())
+    if action == "delete":
+        MW.mdlOutline.removeIndex(source.index())
+    else:
+        MW.mdlOutline.setData(source.index(Outline.title), "Holy city")
+    chapter = target.child(target.childCount() - 1)
+    newFolder = os.path.realpath(os.path.join(folder, *version_1.outlineItemPath(chapter)))
+
+    _failWritesUnder(monkeypatch, newFolder)
+    assert not loadSave.saveProject()
+    monkeypatch.undo()
+    assert os.path.isfile(os.path.join(oldFolder, "folder.txt"))
+    assert os.path.isfile(os.path.join(os.path.dirname(oldFolder), "folder.txt"))
+
+    found = _reopenWithoutSaving(MW)
+    assert set(movedIDs) <= found
+
+
+def test_failed_folder_txt_keeps_items_moved_into_it(sampleProject, monkeypatch):
+    """A scene is dragged into another chapter, and that chapter is renamed. When only the
+    new folder.txt of the chapter cannot be written, the scene's new file is in a folder that
+    is not loaded: its old file must be kept, or the scene is lost when the project is closed
+    without saving."""
+    import os
+    from manuskript.load_save import version_1
+    MW = sampleProject
+    folder = MW.currentProject[:-4]
+    part = MW.mdlOutline.rootItem.child(0)
+    chapter1, chapter2 = part.child(0), part.child(1)
+    scene = chapter1.child(1)
+    sceneID, text = scene.ID(), scene.data(Outline.text)
+
+    drag(MW, scene, chapter2, 0)
+    MW.mdlOutline.setData(chapter2.index(Outline.title), "Pentecost")
+    newFolderTxt = os.path.realpath(os.path.join(
+        folder, *version_1.outlineItemPath(chapter2), "folder.txt"))
+    realWrite = version_1.writeFile
+
+    def failingWrite(filename, content, *args, **kwargs):
+        if os.path.realpath(filename) == newFolderTxt:
+            raise OSError(13, "Permission denied", filename)
+        return realWrite(filename, content, *args, **kwargs)
+
+    monkeypatch.setattr(version_1, "writeFile", failingWrite)
+    assert not loadSave.saveProject()
+    monkeypatch.undo()
+
+    _reopenWithoutSaving(MW)
+    texts = {i[1]: i[4] for i in tree(MW)}
+    assert texts.get(sceneID) == text
