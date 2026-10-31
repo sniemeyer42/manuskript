@@ -201,15 +201,18 @@ class plainText(basicFormat):
                 o = content
                 content = content.replace("  ", " ")
 
+        # Local copy: the settings are shared by every processed text
+        rules = list(s["Custom"])
+
         if s["DoubleQuotes"]:
             q = s["DoubleQuotes"].split("___")
-            s["Custom"].append([True, '"(.*?)"', "{}\\1{}".format(q[0], q[1]), True])
+            rules.append([True, '"(.*?)"', "{}\\1{}".format(q[0], q[1]), True])
 
         if s["SingleQuote"]:
             q = s["SingleQuote"].split("___")
-            s["Custom"].append([True, "'(.*?)'", "{}\\1{}".format(q[0], q[1]), True])
+            rules.append([True, "'(.*?)'", "{}\\1{}".format(q[0], q[1]), True])
 
-        for enabled, A, B, reg in s["Custom"]:
+        for enabled, A, B, reg in rules:
             if not enabled:
                 continue
 

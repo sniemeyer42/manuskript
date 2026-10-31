@@ -74,3 +74,18 @@ def test_noDoubleSeparatorForExcludedItems(plainText, chapter):
     out = f.output(w)
     assert out == "Chapter 1\nText 1.\n\n* * *\nText 3.\n"
     assert out.count("* * *") == 1
+
+
+def test_quoteTransformationsDoNotGrowSettings(plainText, MWEmptyProject):
+    f, w = plainText
+    root = MWEmptyProject.mdlOutline.rootItem
+    for i in range(5):
+        addItem(root, "Scene {}".format(i), "He said \"hi\" and 'bye'.")
+    w.chkTransDoubleQuotes.setChecked(True)
+    w.chkTransSingleQuote.setChecked(True)
+    s = w.getSettings()
+    custom = list(s["Transform"]["Custom"])
+    out = f.concatenate(root, s)
+    assert s["Transform"]["Custom"] == custom
+    assert out.count("\"") == 0
+    assert out.count("'") == 0
