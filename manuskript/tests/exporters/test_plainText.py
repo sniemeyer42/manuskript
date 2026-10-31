@@ -89,3 +89,48 @@ def test_quoteTransformationsDoNotGrowSettings(plainText, MWEmptyProject):
     assert s["Transform"]["Custom"] == custom
     assert out.count("\"") == 0
     assert out.count("'") == 0
+
+
+def test_granularSettingsFromShallowerOutline(MWEmptyProject, exporterSettingsPath):
+    """Granular content settings saved for another outline depth are
+    restored to the matching rows (exporter.ini is not per project)."""
+    import json
+    from manuskript.exporter.manuskript.plainText import plainText
+    root = MWEmptyProject.mdlOutline.rootItem
+    part = addItem(root, "Part")
+    chapter = addItem(part, "Chapter")
+    addItem(chapter, "Scene", "Text.")
+    assert MWEmptyProject.mdlOutline.maxLevel() == 3
+
+    # Settings as saved in a project with a single level
+    f = plainText()
+    s = f.settingsWidget().getSettings()
+    s["Content"].update({"More": True, "FolderTitle": [True],
+                         "TextTitle": [False], "TextText": [False]})
+    with open(exporterSettingsPath, "w", encoding="utf-8") as fp:
+        json.dump(s, fp)
+
+    content = f.settingsWidget().getSettings()["Content"]
+    assert content["More"]
+    assert content["FolderTitle"] == [True, True, True]
+    assert content["TextTitle"] == [False, False, False]
+    assert content["TextText"] == [False, True, True]
+
+
+def test_granularSettingsOutlineGotDeeper(MWEmptyProject, exporterSettingsPath):
+    """The outline can get deeper while the export dialog is open."""
+    from PyQt5.QtCore import Qt
+    from manuskript.exporter.manuskript.plainText import plainText
+    root = MWEmptyProject.mdlOutline.rootItem
+    addItem(root, "Scene 0", "Text 0.")
+    f = plainText()
+    w = f.settingsWidget()
+    w.chkContentMore.setChecked(True)
+    w.tblContent.item(3, 1).setCheckState(Qt.Unchecked)  # Level 1 text title
+    assert w.getSettings()["Content"]["TextTitle"] == [False]
+
+    part = addItem(root, "Part")
+    addItem(addItem(part, "Chapter"), "Scene", "Text.")
+    out = f.output(w)
+    # Deeper levels use the settings of the deepest known level
+    assert out == "Text 0.\n\nPart\nChapter\nText.\n"

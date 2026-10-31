@@ -13,6 +13,17 @@ import codecs
 import logging
 LOGGER = logging.getLogger(__name__)
 
+
+def levelValue(values, level):
+    """Returns the granular content setting for the given item level.
+
+    The outline can be deeper than the table the settings come from, in
+    which case the value of the deepest known level is used."""
+    if level < len(values):
+        return values[level]
+    return values[-1] if values else True
+
+
 class plainText(basicFormat):
     name = safeTranslate(qApp, "Export", "Plain text")
     description = safeTranslate(qApp, "Export", """Simplest export to plain text. Allows you to use your own markup not understood
@@ -133,18 +144,18 @@ class plainText(basicFormat):
 
             if item.isFolder():
                 if not s["Content"]["More"] and s["Content"]["FolderTitle"] or\
-                       s["Content"]["More"] and s["Content"]["FolderTitle"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["FolderTitle"], l):
 
                     r += self.processTitle(item.title(), l, settings)
 
             elif item.isText():
                 if not s["Content"]["More"] and s["Content"]["TextTitle"] or \
-                       s["Content"]["More"] and s["Content"]["TextTitle"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["TextTitle"], l):
 
                     r += self.processTitle(item.title(), l, settings)
 
                 if not s["Content"]["More"] and s["Content"]["TextText"] or \
-                       s["Content"]["More"] and s["Content"]["TextText"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["TextText"], l):
 
                     r += self.processText(item.text(), settings)
 

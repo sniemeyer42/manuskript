@@ -158,16 +158,18 @@ class exporterSettings(QWidget, Ui_exporterSettings):
             self.tblContent.item(1, 2).setCheckState(Qt.Checked if s["TextText"] else Qt.Unchecked)
 
         else:
-            nLevel = len(s["FolderTitle"])
+            # The table layout depends on the current outline depth, which
+            # can differ from the one the settings were saved with.
+            nLevel = (self.tblContent.rowCount() - 2) // 2
             for i in range(nLevel):
                 item = self.tblContent.item(i + 2, 1)
-                if item:
+                if item and i < len(s["FolderTitle"]):
                     item.setCheckState(Qt.Checked if s["FolderTitle"][i] else Qt.Unchecked)
                 item = self.tblContent.item(i + 2 + nLevel, 1)
-                if item:
+                if item and i < len(s["TextTitle"]):
                     item.setCheckState(Qt.Checked if s["TextTitle"][i] else Qt.Unchecked)
                 item = self.tblContent.item(i + 2 + nLevel, 2)
-                if item:
+                if item and i < len(s["TextText"]):
                     item.setCheckState(Qt.Checked if s["TextText"][i] else Qt.Unchecked)
 
         self.chkContentIgnoreCompile.setChecked(s["IgnoreCompile"])
