@@ -931,9 +931,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
             # Load data
             self.loadEmptyDatas()
-            
-            if not self.loadDatas(project):
+
+            # A damaged project must not crash the app: with "Load last project on
+            # startup", it would crash again on every start (#1356).
+            try:
+                loaded = self.loadDatas(project)
+            except Exception:
+                LOGGER.exception("Loading project {} failed.".format(project))
+                F.statusMessage(
+                        self.tr("Loading project {} failed.").format(project), 5000, importance=3)
+                loaded = False
+
+            if not loaded:
                 self.closeProject()
+                # The save cache may still contain files of the project that failed to load
+                loadSave.clearSaveCache()
                 return
 
         self.makeConnections()

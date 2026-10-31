@@ -948,7 +948,8 @@ def loadProject(project, zip=None):
     # Settings
 
     if "settings.txt" in files:
-        settings.load(files["settings.txt"], fromString=True, protocol=0)
+        if not settings.load(files["settings.txt"], fromString=True, protocol=0):
+            errors.append("settings.txt")
     else:
         errors.append("settings.txt")
 

@@ -193,9 +193,16 @@ def load(string, fromString=False, protocol=None):
 
     if not string:
         LOGGER.error("Cannot load settings.")
-        return
+        return False
 
-    allSettings = json.loads(string)
+    try:
+        allSettings = json.loads(string)
+    except ValueError as e:
+        # Damaged settings (truncated by a crash during save, sync conflict...): the
+        # project must still open, with default settings.
+        LOGGER.error("Cannot load settings: %s", e)
+        allSettings = {}
+        return False
 
     #pp=pprint.PrettyPrinter(indent=4, compact=False)
     #print("Loading:")
@@ -355,3 +362,5 @@ def load(string, fromString=False, protocol=None):
         if "useSystemDefaultsForTooltips" not in loaded_tooltip_style:
             loaded_tooltip_style["useSystemDefaultsForTooltips"] = True
         tooltipStyle = loaded_tooltip_style
+
+    return True
