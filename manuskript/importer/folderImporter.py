@@ -2,12 +2,15 @@
 # --!-- coding: utf8 --!--
 
 import os
-from manuskript.importer.abstractImporter import abstractImporter
+from manuskript.importer.abstractImporter import abstractImporter, readTextFile
 from manuskript.models import outlineItem
 from manuskript.enums import Outline
 from manuskript.functions import safeTranslate
 
-from PyQt5.QtWidgets import qApp
+from PyQt5.QtWidgets import qApp, QMessageBox
+
+import logging
+LOGGER = logging.getLogger(__name__)
 
 
 class folderImporter(abstractImporter):
@@ -32,6 +35,7 @@ class folderImporter(abstractImporter):
 
         items = []
         stack = {}
+        skipped = []
 
         for dirpath, dirnames, filenames in os.walk(filePath):
 
@@ -45,15 +49,17 @@ class folderImporter(abstractImporter):
             def addFile(f):
                 fName, fExt = os.path.splitext(f)
                 if fExt.lower() in ext:
+                    path = os.path.join(dirpath, f)
                     try:
-                        with open(os.path.join(dirpath, f), 'rt', encoding="utf-8") as fr:
-                            content = fr.read()
-                        child = outlineItem(title=fName, _type="md", parent=item)
-                        child._data[Outline.text] = content
-                        items.append(child)
-                    except UnicodeDecodeError:
+                        content = readTextFile(path)
+                    except (OSError, ValueError) as e:
                         # Probably not a text file
-                        pass
+                        LOGGER.warning("Skipping %s: %s", path, e)
+                        skipped.append(os.path.relpath(path, filePath))
+                        return
+                    child = outlineItem(title=fName, _type="md", parent=item)
+                    child._data[Outline.text] = content
+                    items.append(child)
 
             def addFolder(d):
                 child = outlineItem(title=d, parent=item)
@@ -86,6 +92,16 @@ class folderImporter(abstractImporter):
                 # Import files
                 for f in filenames:
                     addFile(f)
+
+        if skipped:
+            if len(skipped) > 10:
+                skipped[10:] = [safeTranslate(qApp, "Import", "and {} more").format(
+                    len(skipped) - 10)]
+            QMessageBox.warning(settingsWidget,
+                                safeTranslate(qApp, "Import", "Folder import"),
+                                safeTranslate(qApp, "Import",
+                                              "These files could not be read as text and were not imported:") +
+                                "\n" + "\n".join(skipped))
 
         return items
 

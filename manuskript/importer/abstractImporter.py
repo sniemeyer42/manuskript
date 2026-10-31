@@ -1,14 +1,69 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
+import codecs
+import locale
 import os
+import re
 import shutil
 import subprocess
 
 from PyQt5.QtCore import QSettings
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QCheckBox, QHBoxLayout, \
-                            QLabel, QSpinBox, QComboBox, QLineEdit
+                            QLabel, QSpinBox, QComboBox, QLineEdit, qApp
 from manuskript.ui.collapsibleGroupBox2 import collapsibleGroupBox2
 from manuskript.ui import style
+from manuskript.functions import safeTranslate
+
+import logging
+LOGGER = logging.getLogger(__name__)
+
+
+def readTextFile(filePath):
+    """
+    Reads a text file of unknown encoding, returns its content with "\\n"
+    line endings. Tries UTF-8 (with or without BOM), then the encoding of
+    the locale, then Windows-1252 (and Latin-1, which can decode anything).
+    A UTF-8 file with a few invalid bytes is read as UTF-8, with these bytes
+    replaced by U+FFFD.
+
+    Raises ValueError if the file does not look like a text file.
+    """
+    with open(filePath, 'rb') as f:
+        raw = f.read()
+
+    if raw.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        # Before UTF-16: the UTF-32-LE BOM starts with the UTF-16-LE one
+        encodings = ["utf-32"]
+    elif raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        encodings = ["utf-16"]
+    elif b"\x00" in raw[:8192]:
+        raise ValueError(safeTranslate(qApp, "Import",
+                                       "This does not appear to be a text file."))
+    else:
+        encodings = ["utf-8-sig", locale.getpreferredencoding(False), "cp1252"]
+
+    for encoding in encodings + ["latin-1"]:
+        try:
+            text = raw.decode(encoding)
+            break
+        except (UnicodeDecodeError, LookupError):
+            pass
+
+        if encoding == "utf-8-sig":
+            # Mostly UTF-8 with a few invalid bytes (e.g. text pasted from
+            # another file): only lose these bytes, instead of decoding the
+            # whole file as another encoding. Text in other encodings has
+            # far fewer valid UTF-8 characters per invalid byte (about one
+            # per two in GBK, none in Windows-1252).
+            text = raw.decode(encoding, errors="replace")
+            invalid = text.count("\ufffd") - raw.count("\ufffd".encode("utf-8"))
+            valid = len(re.findall(r"[^\x00-\x7f\ufffd]", text))
+            if valid >= 3 * invalid:
+                LOGGER.warning("%s is not valid UTF-8: %d invalid bytes replaced.",
+                               filePath, invalid)
+                break
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 class abstractImporter:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-from manuskript.importer.abstractImporter import abstractImporter
+from manuskript.importer.abstractImporter import abstractImporter, readTextFile
 from manuskript.models import outlineItem
 from manuskript.enums import Outline
 from manuskript.functions import safeTranslate
@@ -64,9 +64,8 @@ class markdownImporter(abstractImporter):
         """
 
         if not fromString:
-            # Read file
-            with open(filePath, 'rt', encoding="utf-8") as f:
-                txt = f.read()
+            # Read file (raises ValueError if it is not a text file)
+            txt = readTextFile(filePath)
         else:
             txt = fromString
 
