@@ -90,7 +90,10 @@ class tabSplitter(QWidget, Ui_tabSplitter):
             event.ignore()
 
     def dropEvent(self, event: QDropEvent) -> None:
-        itemID = mainWindow().mdlOutline.decodeMimeData(event.mimeData())[0].ID()
+        items = mainWindow().mdlOutline.decodeMimeData(event.mimeData())
+        if not items:
+            return
+        itemID = items[0].ID()
         itemIndex = mainWindow().mdlOutline.getIndexByID(itemID)
         self.mainEditor.setCurrentModelIndex(itemIndex, tabWidget = self.tab)
 

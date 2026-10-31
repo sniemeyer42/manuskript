@@ -24,7 +24,7 @@ except:
     # Invalid locale, but not really a big deal because it's used only for
     # number formatting
     pass
-import time, os
+import time, os, uuid
 
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +32,10 @@ LOGGER = logging.getLogger(__name__)
 # Item XML contains all texts and revisions (of children too), so it can easily
 # exceed libxml2's default limits (10 MB).
 _parser = ET.XMLParser(huge_tree=True)
+
+# Marks Manuskript's own drag and drop / copy data (application/xml can come
+# from any application). Its value identifies the model that made the data.
+_modelMimeType = "application/x-manuskript-model"
 
 
 class abstractModel(QAbstractItemModel):
@@ -56,6 +60,7 @@ class abstractModel(QAbstractItemModel):
         # Stores removed item, in order to remove them on disk when saving, depending on the file format.
         self.removed = []
         self._removingRows = False
+        self._mimeModelID = uuid.uuid4().hex.encode()
 
     def requestNewID(self):
         newID = self.nextAvailableID
@@ -301,6 +306,7 @@ class abstractModel(QAbstractItemModel):
         encodedData = ET.tostring(root)
 
         mimeData.setData("application/xml", encodedData)
+        mimeData.setData(_modelMimeType, self._mimeModelID)
         return mimeData
 
     def supportedDropActions(self):
@@ -355,10 +361,18 @@ class abstractModel(QAbstractItemModel):
         return False
 
     def decodeMimeData(self, data):
-        if not data.hasFormat("application/xml"):
+        if data is None or not data.hasFormat("application/xml"):
             return None
-        encodedData = bytes(data.data("application/xml")).decode()
-        root = ET.XML(encodedData, _parser)
+        encodedData = bytes(data.data("application/xml"))
+        # Data from other applications is parsed with libxml2's default limits
+        # (with huge_tree, older libxml2 versions also skip their checks on
+        # entity expansion).
+        parser = _parser if data.hasFormat(_modelMimeType) else None
+        try:
+            root = ET.XML(encodedData, parser)
+        except ET.XMLSyntaxError:
+            # Not ours: 'application/xml' can come from any application.
+            return None
         if root is None:
             return None
 

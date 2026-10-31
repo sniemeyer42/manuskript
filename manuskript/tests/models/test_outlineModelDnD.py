@@ -150,3 +150,56 @@ def test_dragAndCopyHugeItem(outlineModelStandalone):
 
     # abstractItem.setFromXML (used by copy(), split, import preview, ...)
     assert folder.copy().child(0).data(notes) == bigText
+
+    # The same XML from another application (without Manuskript's mark) is
+    # parsed with libxml2's default limits
+    from PyQt5.QtCore import QMimeData
+    foreign = QMimeData()
+    foreign.setData("application/xml", mimeData.data("application/xml"))
+    assert model.decodeMimeData(foreign) is None
+
+
+@pytest.mark.parametrize("payload", [
+    b"<outlineItems><outlineItem title='x'",        # malformed
+    b"\xff\xfe<x/>",                                # not UTF-8
+    b"<?xml version='1.0' encoding='UTF-8'?><outlineItems/>",
+    b"<svg xmlns='http://www.w3.org/2000/svg'/>",   # foreign XML
+    b"",
+])
+def test_decodeForeignMimeData(outlineModelStandalone, payload):
+    """
+    'application/xml' data from other applications (or garbage) must be
+    ignored, not crash the app.
+    """
+    from PyQt5.QtCore import QMimeData
+    model = outlineModelStandalone
+    IDsBefore = model.rootItem.listAllIDs()
+    folder = model.indexFromItem(model.rootItem.child(0))
+
+    mimeData = QMimeData()
+    mimeData.setData("application/xml", payload)
+    assert not model.decodeMimeData(mimeData)
+    assert not model.canDropMimeData(mimeData, Qt.MoveAction, -1, 0, folder)
+    for action in [Qt.CopyAction, Qt.MoveAction]:
+        assert not model.dropMimeData(mimeData, action, -1, 0, folder)
+        assert not model.dropMimeData(mimeData, action, -1, 0, QModelIndex())
+    assert model.rootItem.listAllIDs() == IDsBefore
+
+
+def test_emptyClipboard(MWSampleProject, monkeypatch):
+    """
+    QClipboard.mimeData() can return None (empty clipboard on some
+    platforms): context menu and paste must not crash.
+    """
+    from PyQt5.QtGui import QClipboard
+    monkeypatch.setattr(QClipboard, "mimeData", lambda *args: None)
+    MW = MWSampleProject
+    model = MW.mdlOutline
+    view = MW.treeRedacOutline
+    IDsBefore = model.rootItem.listAllIDs()
+    selectRows(view, ["40"])
+
+    view.makePopupMenu()
+    assert not view.actPaste.isEnabled()
+    view.paste()
+    assert model.rootItem.listAllIDs() == IDsBefore

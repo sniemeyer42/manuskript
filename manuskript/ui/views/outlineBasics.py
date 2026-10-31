@@ -229,7 +229,8 @@ class outlineBasics(QAbstractItemView):
             menu.addMenu(self.menuCustomIcons)
 
         # Disabling stuff
-        if not clipboard.mimeData().hasFormat("application/xml"):
+        mimeData = clipboard.mimeData()
+        if mimeData is None or not mimeData.hasFormat("application/xml"):
             self.actPaste.setEnabled(False)
 
         if len(sel) == 0:
@@ -298,6 +299,8 @@ class outlineBasics(QAbstractItemView):
 
         if not mimeData:
             mimeData = qApp.clipboard().mimeData()
+            if mimeData is None:
+                return
 
         self.model().dropMimeData(mimeData, Qt.CopyAction, -1, 0, index)
 
