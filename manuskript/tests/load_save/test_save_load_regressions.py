@@ -491,3 +491,28 @@ def test_open_project_file_with_newline(MW, tmp_path):
         assert MW.currentProject == path
     finally:
         MW.closeProject()
+
+
+def test_world_item_with_empty_name_keeps_children(sampleProject):
+    MW = sampleProject
+    wm = MW.mdlWorld
+    category = wm.addItem(title="Magic system", parent=wm.invisibleRootItem())
+    for title in ["Fire runes", "Water runes"]:
+        wm.addItem(title=title, parent=category)
+    category.setText("")
+
+    def world():
+        out = []
+
+        def rec(item, depth):
+            for r in range(item.rowCount()):
+                out.append((depth, item.child(r, 0).text()))
+                rec(item.child(r, 0), depth + 1)
+
+        rec(MW.mdlWorld.invisibleRootItem(), 0)
+        return out
+
+    before = world()
+    assert before[-3:] == [(0, ""), (1, "Fire runes"), (1, "Water runes")]
+    reload(MW)
+    assert world() == before

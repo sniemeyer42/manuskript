@@ -611,8 +611,9 @@ def addWorldItem(root, mdl, parent=QModelIndex()):
                 if y == w.value:
                     outline.attrib[w.name] = val
 
-            if mdl.hasChildren(mdl.index(x, y, parent)):
-                addWorldItem(outline, mdl, mdl.index(x, y, parent))
+        # Sub-items, even if this item has an empty name (which is skipped above)
+        if mdl.hasChildren(mdl.index(x, 0, parent)):
+            addWorldItem(outline, mdl, mdl.index(x, 0, parent))
 
     return root
 
