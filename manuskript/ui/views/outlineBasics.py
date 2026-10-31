@@ -356,50 +356,23 @@ class outlineBasics(QAbstractItemView):
         """
         Move selected items up or down.
         """
+        model = self.model()
 
-        # we store selected indexes
-        currentID = self.model().ID(self.currentIndex())
-        selIDs = [self.model().ID(i) for i in self.selectedIndexes()]
+        # One item per selected row (selectedIndexes() has one index per
+        # visible column), the ones that are first in the moving direction
+        # are moved first.
+        items = [i.internalPointer() for i in self.getSelection()]
+        items.sort(key=lambda item: item.row(), reverse=delta > 0)
 
-        # Block signals
-        self.blockSignals(True)
-        self.selectionModel().blockSignals(True)
-
-        # Move each index individually
-        for idx in self.selectedIndexes():
-            self.moveIndex(idx, delta)
-
-        # Done the hardcore way, so inform views
-        self.model().layoutChanged.emit()
-
-        # restore selection
-        selIdx = [self.model().getIndexByID(ID) for ID in selIDs]
-        sm = self.selectionModel()
-        sm.clear()
-        [sm.select(idx, sm.Select) for idx in selIdx]
-        sm.setCurrentIndex(self.model().getIndexByID(currentID), sm.Select)
-        #self.setSmsgBoxelectionModel(sm)
-
-        # Unblock signals
-        self.blockSignals(False)
-        self.selectionModel().blockSignals(False)
-
-    def moveIndex(self, index, delta=1):
-        """
-        Move the item represented by index. +1 means down, -1 means up.
-        """
-
-        if not index.isValid():
-            return
-
-        if index.parent().isValid():
-            parentItem = index.parent().internalPointer()
-        else:
-            parentItem = index.model().rootItem
-
-        parentItem.childItems.insert(index.row() + delta,
-                                     parentItem.childItems.pop(index.row()))
-        parentItem.updateWordCount()
+        # A selected item that can't be moved (first / last row) blocks the
+        # selected items behind it, so that they keep their order.
+        blocked = {}  # id(parent item) -> row of the blocked item
+        for item in items:
+            parent = item.parent()
+            row = item.row()
+            if blocked.get(id(parent)) == row + delta or \
+               not model.moveItemRow(row, delta, model.indexFromItem(parent)):
+                blocked[id(parent)] = row
 
     def moveUp(self): self.move(-1)
     def moveDown(self): self.move(+1)

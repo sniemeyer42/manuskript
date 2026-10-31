@@ -559,6 +559,39 @@ class abstractModel(QAbstractItemModel):
         else:
             self.insertItem(item, parent.row() + 1, parent.parent())
 
+    def moveItemRow(self, row, delta, parent=QModelIndex()):
+        """
+        Moves the item at `row` in `parent` by `delta` rows (-1: up, +1: down).
+        Returns False if it can't be moved.
+        """
+        if not parent.isValid():
+            parentItem = self.rootItem
+        else:
+            parentItem = parent.internalPointer()
+
+        if not parentItem:
+            return False
+
+        if parent.isValid() and parent.column() != 0:
+            parent = parentItem.index()
+
+        newRow = row + delta
+        if not 0 <= row < parentItem.childCount() or \
+           not 0 <= newRow < parentItem.childCount():
+            return False
+
+        # Qt wants the destination row as numbered before the move
+        destination = newRow + 1 if delta > 0 else newRow
+        if not self.beginMoveRows(parent, row, row, parent, destination):
+            return False
+
+        parentItem.childItems.insert(newRow, parentItem.childItems.pop(row))
+        self.endMoveRows()
+
+        # Emits dataChanged, which also marks the project as modified
+        parentItem.updateWordCount()
+        return True
+
     def removeIndex(self, index):
         item = index.internalPointer()
         self.removeRow(item.row(), index.parent())

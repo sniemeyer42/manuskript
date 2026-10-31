@@ -332,3 +332,81 @@ def test_dropOnFolderSignalsInsertedRows(outlineModelStandalone):
         row = expected[1]
         assert model.index(row, 0, parent).internalPointer().title() == "Text A"
         assert model.rowCount(parent) == row + 1
+
+
+def selectedIDs(view):
+    return sorted(set(i.internalPointer().ID() for i in view.getSelection()))
+
+
+@pytest.mark.parametrize("viewName, columns", [("treeRedacOutline", 1),
+                                               ("treeOutlineOutline", 1),
+                                               ("treeOutlineOutline", 2),
+                                               ("treeOutlineOutline", 7),
+                                               ("treeOutlineOutline", 8)])
+def test_moveUpAndDown(MWSampleProject, monkeypatch, viewName, columns):
+    """
+    Move up / down (Ctrl+Shift+Up / Down) moves each selected item by one
+    row, whatever the number of visible columns (selectedIndexes() has one
+    index per column), and does nothing for an item that is already first /
+    last.
+    """
+    from manuskript import settings
+    from manuskript.enums import Outline
+    MW = MWSampleProject
+    model = MW.mdlOutline
+    view = getattr(MW, viewName)
+    if viewName == "treeOutlineOutline":
+        allColumns = [Outline.title, Outline.POV, Outline.status,
+                      Outline.compile, Outline.wordCount, Outline.goal,
+                      Outline.goalPercentage, Outline.label]
+        monkeypatch.setattr(settings, "outlineViewColumns",
+                            allColumns[:columns])
+        view.hideColumns()
+    # Chapter 9: 37, 38, 39
+    selectRows(view, ["37"])
+    assert len(view.selectedIndexes()) == columns
+
+    view.moveUp()
+    assert childIDs(model, "28") == ["37", "38", "39"]
+
+    MW.projectDirty = False
+    view.moveDown()
+    assert childIDs(model, "28") == ["38", "37", "39"]
+    assert selectedIDs(view) == ["37"]
+    assert view.currentIndex().internalPointer().ID() == "37"
+    assert MW.projectDirty
+
+    view.moveDown()
+    view.moveDown()
+    assert childIDs(model, "28") == ["38", "39", "37"]
+    assert view.currentIndex().row() == 2
+
+    # Several items
+    selectRows(view, ["39", "37"])
+    view.moveUp()
+    assert childIDs(model, "28") == ["39", "37", "38"]
+    view.moveUp()
+    assert childIDs(model, "28") == ["39", "37", "38"]
+    assert selectedIDs(view) == ["37", "39"]
+    view.moveDown()
+    assert childIDs(model, "28") == ["38", "39", "37"]
+
+    # Top-level items
+    selectRows(view, ["35"])
+    MW.projectDirty = False
+    view.moveDown()
+    assert [c.ID() for c in model.rootItem.children()] == ["34", "35", "60"]
+    assert MW.projectDirty
+
+
+def test_moveUpKeepsEditorIndex(MWSampleProject):
+    """The editor showing a moved item still shows it after the move."""
+    MW = MWSampleProject
+    model = MW.mdlOutline
+    view = MW.treeRedacOutline
+    selectRows(view, ["42"])
+    editor = MW.mainEditor.currentEditor()
+    view.moveUp()
+    assert childIDs(model, "29") == ["40", "42", "41"]
+    assert editor.currentIndex.internalPointer().ID() == "42"
+    assert editor.currentIndex.row() == 1
