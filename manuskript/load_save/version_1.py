@@ -330,7 +330,6 @@ def saveProject(zip=None):
     # Save to plain text
 
     else:
-        global cache
         filesWithPermissionErrors = list()
 
         # Project path
@@ -347,29 +346,14 @@ def saveProject(zip=None):
             if os.path.exists(os.path.join(dir, folder)):
                 shutil.rmtree(os.path.join(dir, folder))
 
-        # Moving files that have been renamed
+        # Renamed / moved items are NOT moved on disk. Their new path is not in the cache,
+        # so they are written below, and their old file is then removed as a phantom.
+        # Moving files in place one by one is not safe: an item's new path can be the old
+        # path of another item that has not been moved yet (its file gets overwritten,
+        # see #1320), the destination folder may not exist yet (#1306), and renaming the
+        # cache keys by substring corrupted the cache (#1216, #761).
         for old, new in moves:
-
-            # Get full path
-            oldPath = os.path.join(dir, folder, old)
-            newPath = os.path.join(dir, folder, new)
-
-            # Move the old file to the new place
-            try:
-                os.replace(oldPath, newPath)
-                LOGGER.debug("* Renaming/moving {} to {}".format(old, new))
-            except FileNotFoundError:
-                # Maybe parent folder has been renamed
-                pass
-
-            # Update cache
-            cache2 = {}
-            for f in cache:
-                f2 = f.replace(old, new)
-                if f2 != f:
-                    LOGGER.debug("  * Updating cache: %s, %s", f, f2)
-                cache2[f2] = cache[f]
-            cache = cache2
+            LOGGER.debug("* %s has been renamed/moved to %s, it will be rewritten", old, new)
 
         # Writing files
         for path, content in files:
@@ -377,7 +361,8 @@ def saveProject(zip=None):
             os.makedirs(os.path.dirname(filename), exist_ok=True)
 
             # Check if content is in cache, and write if necessary
-            if path not in cache or cache[path] != content:
+            # (also if the file has disappeared from disk since it was cached)
+            if path not in cache or cache[path] != content or not os.path.exists(filename):
                 LOGGER.debug("* Writing file {} ({})".format(path, "not in cache" if path not in cache else "different"))
                 # mode = "w" + ("b" if type(content) == bytes else "")
                 if type(content) == bytes:
@@ -397,16 +382,45 @@ def saveProject(zip=None):
 
                 cache[path] = content
 
-        # Removing phantoms
-        for path in [p for p in cache if p not in [p for p, c in files]]:
+        # Removing phantoms (files of items that have been removed, renamed or moved)
+        written = {p.lower(): p for p, c in files}
+        phantoms = [p for p in cache if p not in [p for p, c in files]]
+        if phantoms and filesWithPermissionErrors:
+            # Not if a file could not be written: the old file of a renamed or moved item is
+            # then the only copy of its content. Old files stay on disk and in the cache, so
+            # that the next save removes them (once the new files have been written).
+            LOGGER.warning("Some files could not be written, %d old files are not removed.",
+                           len(phantoms))
+            phantoms = []
+
+        for path in phantoms:
             filename = os.path.join(dir, folder, path)
-            LOGGER.debug("* Removing %s", path)
 
-            if os.path.isdir(filename):
-                shutil.rmtree(filename)
+            # On a case-insensitive file system (Windows, macOS), the old file of an item
+            # whose name only changed in case is the file that has just been written.
+            same = written.get(path.lower())
+            try:
+                isWrittenFile = same is not None and \
+                    os.path.samefile(filename, os.path.join(dir, folder, same))
+            except OSError:
+                isWrittenFile = False
 
-            else:  # elif os.path.exists(filename)
-                os.remove(filename)
+            try:
+                if isWrittenFile:
+                    LOGGER.debug("* Not removing %s: it is the same file as %s", path, same)
+
+                elif os.path.isdir(filename):
+                    LOGGER.debug("* Removing %s", path)
+                    shutil.rmtree(filename)
+
+                elif os.path.exists(filename):
+                    LOGGER.debug("* Removing %s", path)
+                    os.remove(filename)
+
+            except OSError as e:
+                # Keep it in the cache, so that we try again next time.
+                LOGGER.error("Cannot remove file %s: %s", filename, e)
+                continue
 
             # Clear cache
             cache.pop(path, 0)

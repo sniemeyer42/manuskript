@@ -194,6 +194,15 @@ class abstractItem():
         """
         item = self.__class__(xml=self.toXML())
         item.setData(self.enum.ID, None)
+
+        # The copy has no file on disk yet: it must not inherit the original's lastPath
+        # (used by loadSave version_1), or it would be handled as if it was the original.
+        def clearLastPath(i):
+            i._lastPath = ""
+            for c in i.children():
+                clearLastPath(c)
+
+        clearLastPath(item)
         return item
 
     def siblings(self):

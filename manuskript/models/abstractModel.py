@@ -466,6 +466,9 @@ class abstractModel(QAbstractItemModel):
                     # will receive new ones when inserted within the model.
                     def removeIDs(i):
                         i.setData(item.enum.ID, None)
+                        # Duplicates have no file on disk yet, so they must not keep the
+                        # original's lastPath (used by loadSave version_1).
+                        i._lastPath = ""
                         for c in i.children():
                             removeIDs(c)
 
