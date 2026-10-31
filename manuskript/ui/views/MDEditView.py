@@ -193,14 +193,24 @@ class MDEditView(textEditView):
 
     def cursorPositionHasChanged(self):
         self.centerCursor()
+        lastPosition = self._lastCursorPosition
+        self._lastCursorPosition = self.textCursor().position()
+        if not self.highlighter:
+            return
         # Focus mode
-        if self.highlighter and settings.textEditor["focusMode"]:
-            if self._lastCursorPosition:
-                block = self.document().findBlock(self._lastCursorPosition)
+        if settings.textEditor["focusMode"]:
+            if lastPosition is not None:
+                block = self.document().findBlock(lastPosition)
                 self.highlighter.rehighlightBlock(block)
-            self._lastCursorPosition = self.textCursor().position()
             block = self.document().findBlock(self._lastCursorPosition)
             self.highlighter.rehighlightBlock(block)
+        # The word at the cursor is not spellchecked while the cursor is at the
+        # end of the paragraph (see BasicHighlighter.highlightBlockAfter), so
+        # check the paragraph again once the cursor left it.
+        elif self.spellcheck and self._dict and lastPosition is not None:
+            block = self.document().findBlock(lastPosition)
+            if block != self.textCursor().block():
+                self.highlighter.rehighlightBlock(block)
 
     def centerCursor(self, force=False):
         cursor = self.cursorRect()

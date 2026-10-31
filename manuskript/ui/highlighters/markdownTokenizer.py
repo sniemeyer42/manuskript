@@ -75,6 +75,13 @@ class MarkdownTokenizer(HighlightTokenizer):
 
     DUMMY_CHAR = "$"
     MAX_MARKDOWN_HEADING_LEVEL = 6
+    # A block in one of these states, followed by one in one of these states,
+    # ends with a line break if its text ends with two spaces.
+    LINE_BREAK_STATES = [
+        MS.MarkdownStateParagraph,
+        MS.MarkdownStateBlockquote,
+        MS.MarkdownStateNumberedList,
+        MS.MarkdownStateBulletPointList,]
 
     paragraphBreakRegex = QRegExp("^\\s*$")
     heading1SetextRegex = QRegExp("^===+\\s*$")
@@ -129,7 +136,8 @@ class MarkdownTokenizer(HighlightTokenizer):
     def __init__(self):
         HighlightTokenizer.__init__(self)
 
-    def tokenize(self, text, currentState, previousState, nextState):
+    def tokenize(self, text, currentState, previousState, nextState,
+                 previousText=None, newPrevious=False):
         self.currentState = currentState
         self.previousState = previousState
         self.nextState = nextState
@@ -164,8 +172,8 @@ class MarkdownTokenizer(HighlightTokenizer):
              self.tokenizeBlockquote(text) or \
              self.tokenizeNumberedList(text) or \
              self.tokenizeBulletPointList(text):
-            self.tokenizeLineBreak(text)
             self.tokenizeInline(text)
+            self.tokenizeLineBreak(text)
 
         else:
             if previousState in [MS.MarkdownStateListLineBreak,
@@ -179,8 +187,8 @@ class MarkdownTokenizer(HighlightTokenizer):
                     self.setState(MS.MarkdownStateParagraph)
             else:
                 self.setState(MS.MarkdownStateParagraph)
-            self.tokenizeLineBreak(text)
             self.tokenizeInline(text)
+            self.tokenizeLineBreak(text)
 
         # Make sure that if the second line of a setext heading is removed the
         # first line is reprocessed.  Otherwise, it will still show up in the
@@ -189,6 +197,23 @@ class MarkdownTokenizer(HighlightTokenizer):
            self.getState() != MS.MarkdownStateSetextHeading1Line2) or \
            (previousState == MS.MarkdownStateSetextHeading2Line1 and \
            self.getState() != MS.MarkdownStateSetextHeading2Line2):
+            self.requestBacktrack()
+
+        # The previous block's line break (see tokenizeLineBreak) depends on
+        # this block's state. If the previous block can have one, it must be
+        # highlighted again when that changed (whatever the state became), or
+        # when it was followed by another block before (newPrevious). Only
+        # then: requesting it on every pass made each paragraph re-highlight
+        # its predecessor, up to the top of the document. If this block was
+        # not highlighted before, the previous one guessed its state (see
+        # MarkdownHighlighter.doHighlightBlock).
+        if previousState in self.LINE_BREAK_STATES and \
+           (newPrevious or
+            (currentState != MS.MarkdownStateUnknown and
+             (currentState in self.LINE_BREAK_STATES) !=
+             (self.getState() in self.LINE_BREAK_STATES))) and \
+           (previousText is None or
+            self.lineBreakRegex.exactMatch(previousText)):
             self.requestBacktrack()
 
     def tokenizeSetextHeadingLine1(self, text):
@@ -434,27 +459,13 @@ class MarkdownTokenizer(HighlightTokenizer):
         return False
 
     def tokenizeLineBreak(self, text):
-        currentState = self.currentState
-        previousState = self.previousState
+        # The state set by tokenize(), not the one before this pass. (The
+        # previous block's line break is updated at the end of tokenize().)
+        currentState = self.getState()
         nextState = self.nextState
 
-        if currentState in [
-            MS.MarkdownStateParagraph,
-            MS.MarkdownStateBlockquote,
-            MS.MarkdownStateNumberedList,
-            MS.MarkdownStateBulletPointList,]:
-            if previousState in [
-                MS.MarkdownStateParagraph,
-                MS.MarkdownStateBlockquote,
-                MS.MarkdownStateNumberedList,
-                MS.MarkdownStateBulletPointList,]:
-                self.requestBacktrack()
-
-            if nextState in [
-                MS.MarkdownStateParagraph,
-                MS.MarkdownStateBlockquote,
-                MS.MarkdownStateNumberedList,
-                MS.MarkdownStateBulletPointList,]:
+        if currentState in self.LINE_BREAK_STATES:
+            if nextState in self.LINE_BREAK_STATES:
                 if self.lineBreakRegex.exactMatch(text):
                     token = Token()
                     token.type = MTT.TokenLineBreak

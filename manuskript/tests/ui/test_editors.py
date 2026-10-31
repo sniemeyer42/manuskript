@@ -3,10 +3,46 @@
 
 """Tests for the text editors (textEditView, MDEditView)."""
 
+import pytest
+
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtTest import QTest
+from PyQt5.QtWidgets import qApp
 
+from manuskript import settings
+from manuskript.enums import Outline
+from manuskript.ui.highlighters import MarkdownHighlighter
 from manuskript.ui.views.MDEditView import MDEditView
+
+
+def pump():
+    """Processes pending (queued) events."""
+    for i in range(20):
+        qApp.processEvents()
+
+
+@pytest.fixture
+def textItem(MWEmptyProject):
+    """Returns a function creating a text item with the given text."""
+    from manuskript.models import outlineItem
+
+    def create(text):
+        item = outlineItem(title="Text", _type="md",
+                           parent=MWEmptyProject.mdlOutline.rootItem)
+        item.setData(Outline.text, text)
+        return item
+
+    return create
+
+
+def editorFor(item):
+    """Returns a shown MDEditView editing the item's text."""
+    ed = MDEditView(None)
+    ed.resize(400, 300)
+    ed.show()
+    ed.setCurrentModelIndex(item.index())
+    pump()
+    return ed
 
 
 def test_MDEditView_clickRectsAreDebounced(monkeypatch):
@@ -155,4 +191,198 @@ def test_MDEditView_clickRectsAfterEmojis():
     assert any(ct.rect.contains(r.center()) and
                ct.texts[2] == "http://example.org/99"
                for ct in ed.clickRects)
+    ed.close()
+
+
+def test_MarkdownHighlighter_typingDoesNotRehighlightPreviousParagraphs(
+        textItem, monkeypatch):
+    """
+    Typing in the last of many single-newline-separated paragraphs only
+    highlights the changed paragraph, not all the previous ones (#1376).
+    """
+    ed = editorFor(textItem("\n".join(["A paragraph of prose."] * 30)))
+    assert isinstance(ed.highlighter, MarkdownHighlighter)
+
+    highlighted = []
+    doHighlightBlock = MarkdownHighlighter.doHighlightBlock
+
+    def countingDoHighlightBlock(self, text):
+        if self is ed.highlighter:
+            highlighted.append(self.currentBlock().blockNumber())
+        doHighlightBlock(self, text)
+
+    monkeypatch.setattr(MarkdownHighlighter, "doHighlightBlock",
+                        countingDoHighlightBlock)
+
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    cursor.insertText("x")
+    pump()
+    assert highlighted == [29]
+    ed.close()
+
+
+def hasLineBreakMarker(block):
+    return any(r.start == len(block.text()) - 1 and r.length == 1 and
+               r.format.background().style() != 0
+               for r in block.layout().formats())
+
+
+def test_MarkdownHighlighter_lineBreakMarkerIsUpdated(textItem):
+    """
+    A paragraph ending with two spaces gets its line-break marker as soon
+    as a paragraph follows it.
+    """
+    ed = editorFor(textItem("foo  \nbar\nbaz"))
+    assert hasLineBreakMarker(ed.document().firstBlock())
+    ed.close()
+
+    ed = editorFor(textItem("foo  \n"))
+    assert not hasLineBreakMarker(ed.document().firstBlock())
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    cursor.insertText("b")
+    pump()
+    assert hasLineBreakMarker(ed.document().firstBlock())
+    ed.close()
+
+
+@pytest.mark.parametrize("text, n, newText, marker", [
+    ("foo  \nbar", 1, "# bar", False),  # The next line becomes a heading,
+    ("- one  \n- two", 1, "## two", False),
+    ("foo  \nbar\n", 2, "===", False),  # a Setext heading,
+    ("foo  \nbar", 1, "", False),  # empty,
+    ("foo  \nbar", 1, "***", False),  # a horizontal rule,
+    ("foo  \n# bar", 1, "bar", True),  # or a paragraph again.
+])
+def test_MarkdownHighlighter_lineBreakMarkerFollowsNextLine(
+        textItem, text, n, newText, marker):
+    """
+    The line-break marker of a line ending with two spaces is updated
+    when the next line changes, whatever it becomes.
+    """
+    ed = editorFor(textItem(text))
+    assert hasLineBreakMarker(ed.document().firstBlock()) != marker
+    cursor = QTextCursor(ed.document().findBlockByNumber(n))
+    cursor.movePosition(QTextCursor.EndOfBlock, QTextCursor.KeepAnchor)
+    cursor.insertText(newText)
+    pump()
+    assert hasLineBreakMarker(ed.document().firstBlock()) == marker
+    ed.close()
+
+
+def test_MarkdownHighlighter_lineBreakMarkerWhenLineIsRemoved(textItem):
+    """
+    The line-break marker is updated when the line after it is removed.
+    """
+    ed = editorFor(textItem("foo  \n\nbar"))
+    assert not hasLineBreakMarker(ed.document().firstBlock())
+    cursor = QTextCursor(ed.document().lastBlock())
+    cursor.deletePreviousChar()
+    pump()
+    assert ed.toPlainText() == "foo  \nbar"
+    assert hasLineBreakMarker(ed.document().firstBlock())
+    ed.close()
+
+
+def test_MarkdownHighlighter_openingDoesNotRehighlightParagraphs(
+        textItem, monkeypatch):
+    """
+    Opening a text highlights each paragraph only once, also the ones
+    ending with a line break (two spaces), whose highlighting depends on
+    the next paragraph.
+    """
+    rehighlighted = []
+    onHighlightBlockAtPosition = MarkdownHighlighter.onHighlightBlockAtPosition
+
+    def countingOnHighlightBlockAtPosition(self, position):
+        rehighlighted.append(self.document().findBlock(position).blockNumber())
+        onHighlightBlockAtPosition(self, position)
+
+    monkeypatch.setattr(MarkdownHighlighter, "onHighlightBlockAtPosition",
+                        countingOnHighlightBlockAtPosition)
+    ed = editorFor(textItem("\n".join(["A paragraph of prose."] * 30 +
+                                      ["A line break  "] * 30 +
+                                      ["Last one."])))
+    assert rehighlighted == []
+    assert all(hasLineBreakMarker(ed.document().findBlockByNumber(n))
+               for n in range(30, 60))
+    ed.close()
+
+
+@pytest.mark.parametrize("leave", ["Down", "click"])
+def test_MDEditView_spellchecksParagraphWhenCursorLeavesIt(textItem, leave):
+    """
+    The last word of a paragraph is not spellchecked while the cursor is
+    at its end (it may still be typed), but once the cursor leaves the
+    paragraph, also with the arrow keys or the mouse.
+    """
+    from PyQt5.QtCore import Qt
+    from manuskript.functions.spellchecker import BasicDictionary
+
+    class Dictionary(BasicDictionary):
+        def __init__(self):
+            self._customDict = set()
+
+        def isMisspelled(self, word):
+            return word == "tehh"
+
+    ed = MDEditView(None)
+    ed.spellcheck = True
+    ed._dict = Dictionary()
+    ed.resize(400, 300)
+    ed.show()
+    ed.setCurrentModelIndex(
+        textItem("First paragraph.\nSecond paragraph.").index())
+    pump()
+
+    def misspelled(block):
+        return [(r.start, r.length) for r in block.layout().formats()
+                if r.format.underlineStyle() != 0]
+
+    cursor = QTextCursor(ed.document().firstBlock())
+    cursor.movePosition(QTextCursor.EndOfBlock)
+    ed.setTextCursor(cursor)
+    QTest.keyClicks(ed, " tehh")
+    pump()
+    first = ed.document().firstBlock()
+    assert misspelled(first) == []
+    if leave == "Down":
+        QTest.keyClick(ed, Qt.Key_Down)
+    else:
+        cursor = QTextCursor(ed.document().lastBlock())
+        QTest.mouseClick(ed.viewport(), Qt.LeftButton, Qt.NoModifier,
+                         ed.cursorRect(cursor).center())
+    pump()
+    assert ed.textCursor().block() == ed.document().lastBlock()
+    assert misspelled(first) == [(17, 4)]
+    ed.close()
+
+
+def test_MDEditView_focusModeFromStartOfText(textItem, monkeypatch):
+    """
+    In focus mode, leaving the first paragraph from position 0 fades it.
+    """
+    monkeypatch.setitem(settings.textEditor, "focusMode", "paragraph")
+    ed = editorFor(textItem("First paragraph here.\n"
+                            "Second paragraph here.\n"
+                            "Third paragraph here."))
+
+    def faded(n):
+        formats = ed.document().findBlockByNumber(n).layout().formats()
+        return bool(formats) and all(
+            r.format.foreground().color().alpha() < 255 for r in formats)
+
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    ed.setTextCursor(cursor)
+    pump()
+    cursor.movePosition(QTextCursor.Start)
+    ed.setTextCursor(cursor)
+    pump()
+    assert [faded(n) for n in range(3)] == [False, True, True]
+    cursor.movePosition(QTextCursor.NextBlock)
+    ed.setTextCursor(cursor)
+    pump()
+    assert [faded(n) for n in range(3)] == [True, False, True]
     ed.close()
