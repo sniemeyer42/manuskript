@@ -29,6 +29,10 @@ import time, os
 import logging
 LOGGER = logging.getLogger(__name__)
 
+# Item XML contains all texts and revisions (of children too), so it can easily
+# exceed libxml2's default limits (10 MB).
+_parser = ET.XMLParser(huge_tree=True)
+
 
 class abstractModel(QAbstractItemModel):
     """
@@ -291,7 +295,7 @@ class abstractModel(QAbstractItemModel):
 
         for index in indexes:
             if index.isValid() and index.column() == 0:
-                item = ET.XML(index.internalPointer().toXML())
+                item = ET.XML(index.internalPointer().toXML(), _parser)
                 root.append(item)
 
         encodedData = ET.tostring(root)
@@ -354,7 +358,7 @@ class abstractModel(QAbstractItemModel):
         if not data.hasFormat("application/xml"):
             return None
         encodedData = bytes(data.data("application/xml")).decode()
-        root = ET.XML(encodedData)
+        root = ET.XML(encodedData, _parser)
         if root is None:
             return None
 

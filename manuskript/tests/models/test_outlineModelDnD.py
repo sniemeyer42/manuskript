@@ -105,3 +105,48 @@ def test_dragAndDropInEditorTree(MWSampleProject, sources, target, where,
     item = editor.currentIndex.internalPointer()
     assert item is model.getItemByID(sources[0])
     assert editor.currentIndex.row() == item.row()
+
+
+@pytest.fixture
+def outlineModelStandalone():
+    """Returns an outlineModel (not linked to the main window) with:
+      * Folder (ID 1)
+        * Text A (ID 2)
+        * Text B (ID 3)
+      * Other folder (ID 4)
+    """
+    from manuskript.models.outlineModel import outlineModel
+    from manuskript.models import outlineItem
+    model = outlineModel(None)
+    folder = outlineItem(title="Folder", _type="folder", parent=model.rootItem)
+    outlineItem(title="Text A", _type="md", parent=folder)
+    outlineItem(title="Text B", _type="md", parent=folder)
+    outlineItem(title="Other folder", _type="folder", parent=model.rootItem)
+    assert model.rootItem.listAllIDs() == ["0", "1", "2", "3", "4"]
+    return model
+
+
+def test_dragAndCopyHugeItem(outlineModelStandalone):
+    """
+    Items whose XML is bigger than libxml2's default limit (10 MB) can be
+    dragged, copied, pasted and duplicated.
+    (https://github.com/olivierkes/manuskript/issues/918, #1193, #1216)
+    """
+    model = outlineModelStandalone
+    folder = model.rootItem.child(0)
+    other = model.indexFromItem(model.rootItem.child(1))
+    # 10.5 MB in a single attribute (notes, to avoid slow word counts)
+    bigText = "word " * 2100000
+    notes = folder.enum.notes
+    folder.child(0).setData(notes, bigText)
+
+    mimeData = model.mimeData([model.indexFromItem(folder)])
+    items = model.decodeMimeData(mimeData)
+    assert [i.title() for i in items] == ["Folder"]
+    assert items[0].child(0).data(notes) == bigText
+    assert model.canDropMimeData(mimeData, Qt.MoveAction, -1, 0, other)
+    assert model.dropMimeData(mimeData, Qt.CopyAction, -1, 0, other)
+    assert model.rootItem.child(1).child(0).child(0).data(notes) == bigText
+
+    # abstractItem.setFromXML (used by copy(), split, import preview, ...)
+    assert folder.copy().child(0).data(notes) == bigText
