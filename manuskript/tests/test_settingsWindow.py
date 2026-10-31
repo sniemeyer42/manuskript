@@ -162,3 +162,32 @@ def test_general(MWSampleProject):
     SW.lstThemes.setCurrentItem(item)
     SW.removeTheme()
     assert SW.lstThemes.count() == count
+
+
+def test_translationList(MWSampleProject):
+    """All shipped translations can be chosen in the settings."""
+    import glob
+    import os
+    from manuskript.settingsWindow import settingsWindow
+    SW = settingsWindow(MWSampleProject)
+
+    shipped = sorted(os.path.basename(f) for f in
+                     glob.glob(F.appPath(os.path.join("i18n", "manuskript_*.qm"))))
+    assert shipped
+    names = list(SW.translations)
+    assert names[0] == "English"
+    assert SW.translations["English"] == ""
+    assert sorted(SW.translations.values()) == [""] + shipped
+    assert SW.cmbTranslation.count() == len(shipped) + 1
+    assert all(names)
+
+    # Languages are named in their own language. The names come from the
+    # CLDR data of the Qt build, so only check how the labels are made.
+    from PyQt5.QtCore import QLocale
+    for name, translation in SW.translations.items():
+        locale = F.translationLocale(translation)
+        if translation and locale.language() != QLocale.C:
+            assert name.casefold().startswith(
+                locale.nativeLanguageName().casefold()), (name, translation)
+    zh = F.translationLocale("manuskript_zh_HANT.qm")
+    assert zh.script() == QLocale.TraditionalChineseScript

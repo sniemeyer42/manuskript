@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
+import glob
 import os
 import shutil
 from collections import OrderedDict
 
-from PyQt5.QtCore import QSize, QSettings, QRegExp, QTranslator, QObject
+from PyQt5.QtCore import QSize, QSettings, QRegExp, QTranslator, QObject, QLocale
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIntValidator, QIcon, QFont, QColor, QPixmap, QStandardItem, QPainter
 from PyQt5.QtGui import QStyleHints
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import qApp, QFileDialog
 from manuskript import settings
 from manuskript.enums import Outline
 from manuskript.functions import allPaths, iconColor, writablePath, appPath, findWidgetsOfClass
-from manuskript.functions import mainWindow, findBackground, themeIcon
+from manuskript.functions import mainWindow, findBackground, themeIcon, translationLocale
 from manuskript.ui.editors.tabSplitter import tabSplitter
 from manuskript.ui.editors.themes import createThemePreview
 from manuskript.ui.editors.themes import getThemeName
@@ -25,6 +26,26 @@ from manuskript.ui.views.outlineView import outlineView
 from manuskript.ui.views.textEditView import textEditView
 from manuskript.ui.welcome import welcome
 from manuskript.ui import style as S
+
+
+def translationName(translation):
+    """Returns the name of the language of a translation file such as
+    'manuskript_pt_BR.qm', written in that language."""
+    code = translation[len("manuskript_"):-len(".qm")]
+    locale = translationLocale(translation)
+    name = locale.nativeLanguageName()
+    if locale.language() == QLocale.C or not name:
+        return code
+
+    code, _, variant = code.partition("@")
+    parts = code.split("_")
+    # Add the country when the language name alone is ambiguous (pt / pt_BR)
+    if (len(parts) > 1 and len(parts[-1]) == 2
+            and name == QLocale(parts[0]).nativeLanguageName()):
+        name += " ({})".format(locale.nativeCountryName())
+    if variant:
+        name += " ({})".format(variant)
+    return name[:1].upper() + name[1:]
 
 
 class settingsWindow(QWidget, Ui_Settings):
@@ -76,29 +97,16 @@ class settingsWindow(QWidget, Ui_Settings):
         self.cmbTranslation.clear()
         tr = OrderedDict()
         tr["English"] = ""
-        tr["Arabic (Saudi Arabia)"] = "manuskript_ar_SA.qm"
-        tr["German"] = "manuskript_de.qm"
-        tr["English (Great Britain)"] = "manuskript_en_GB.qm"
-        tr["Spanish"] = "manuskript_es.qm"
-        tr["Persian"] = "manuskript_fa.qm"
-        tr["French"] = "manuskript_fr.qm"
-        tr["Hungarian"] = "manuskript_hu.qm"
-        tr["Indonesian"] = "manuskript_id.qm"
-        tr["Italian"] = "manuskript_it.qm"
-        tr["Japanese"] = "manuskript_ja.qm"
-        tr["Korean"] = "manuskript_ko.qm"
-        tr["Norwegian Bokmål"] = "manuskript_nb_NO.qm"
-        tr["Dutch"] = "manuskript_nl.qm"
-        tr["Polish"] = "manuskript_pl.qm"
-        tr["Portuguese (Brazil)"] = "manuskript_pt_BR.qm"
-        tr["Portuguese (Portugal)"] = "manuskript_pt_PT.qm"
-        tr["Romanian"] = "manuskript_ro.qm"
-        tr["Russian"] = "manuskript_ru.qm"
-        tr["Svenska"] = "manuskript_sv.qm"
-        tr["Turkish"] = "manuskript_tr.qm"
-        tr["Ukrainian"] = "manuskript_uk.qm"
-        tr["Chinese (Simplified)"] = "manuskript_zh_CN.qm"
-        tr["Chinese (Traditional)"] = "manuskript_zh_HANT.qm"
+        # All translations shipped in i18n/, named in their own language
+        names = {}
+        for path in sorted(glob.glob(appPath(os.path.join("i18n", "manuskript_*.qm")))):
+            translation = os.path.basename(path)
+            name = translationName(translation)
+            if name in names or name in tr:
+                name = "{} [{}]".format(name, translation)
+            names[name] = translation
+        for name in sorted(names, key=str.casefold):
+            tr[name] = names[name]
         self.translations = tr
 
         for name in tr:

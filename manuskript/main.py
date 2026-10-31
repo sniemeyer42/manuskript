@@ -22,6 +22,16 @@ except (AttributeError, RuntimeError):
 import logging
 LOGGER = logging.getLogger(__name__)
 
+def translationFileName(languageCode):
+    """Returns the name of the translation file to try for a UI language code
+    such as 'de-DE' (see QLocale.uiLanguages())."""
+    lc = languageCode.replace('-', '_')
+    # Traditional Chinese is shipped as manuskript_zh_HANT.qm, a name that
+    # QTranslator's fallback never builds from zh_TW, zh_HK or zh_Hant_TW.
+    if lc.startswith("zh") and QLocale(lc).script() == QLocale.TraditionalChineseScript:
+        lc = "zh_HANT"
+    return "manuskript_{}.qm".format(lc)
+
 def prepare(arguments, tests=False):
     # Qt WebEngine demands this attribute be set _before_ we create our QApplication object.
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
@@ -99,7 +109,7 @@ def prepare(arguments, tests=False):
                     lc = language_code.replace('-', '_')
                     if lc.lower() == 'en_US'.lower():
                         break
-                    if tryLoadTranslation("manuskript_{}.qm".format(lc), source):
+                    if tryLoadTranslation(translationFileName(language_code), source):
                         using_builtin_translation = False
                         break
 
