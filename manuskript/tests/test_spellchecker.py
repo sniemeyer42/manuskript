@@ -442,20 +442,33 @@ def test_setDictEnablesSpellcheckAgain(monkeypatch):
 
 @pytest.fixture
 def dictionaryMenu(MW, monkeypatch):
-    """MainWindow whose dictionary menu lists fake dictionaries."""
+    """MainWindow whose dictionary menu lists fake libraries. "Lazy" has to
+    be started to list its dictionaries (like LanguageTool)."""
     from PyQt5.QtWidgets import QMenu, QActionGroup
     from PyQt5.QtCore import Qt
     from manuskript import functions as F
     from manuskript import settings
 
-    available = OrderedDict([("Fake", ["aa_AA", "bb_BB"]),
-                             ("Other", ["bb_BB", "cc_CC"])])
+    started = []
+
+    def availableDictionaries():
+        dictionaries = OrderedDict([("Fake", ["aa_AA", "bb_BB"]),
+                                    ("Other", ["bb_BB", "cc_CC"])])
+        dictionaries["Lazy"] = ["dd_DD"] if "Lazy" in started else None
+        return dictionaries
+
+    def startLibrary(lib):
+        if lib not in started:
+            started.append(lib)
+
     monkeypatch.setattr(S.Spellchecker, "isInstalled", staticmethod(lambda: True))
     monkeypatch.setattr(S.Spellchecker, "availableDictionaries",
-                        staticmethod(lambda: available))
+                        staticmethod(availableDictionaries))
+    monkeypatch.setattr(S.Spellchecker, "startLibrary", staticmethod(startLibrary))
     monkeypatch.setattr(S.Spellchecker, "supportedLibraries",
                         staticmethod(lambda: OrderedDict([("Fake", None),
-                                                          ("Other", None)])))
+                                                          ("Other", None),
+                                                          ("Lazy", None)])))
     monkeypatch.setattr(S.Spellchecker, "getDefaultDictionary",
                         staticmethod(lambda: "Fake:aa_AA"))
     monkeypatch.setattr(S.Spellchecker, "getDictionary",
@@ -467,10 +480,12 @@ def dictionaryMenu(MW, monkeypatch):
     if not hasattr(MW, "menuDict"):
         monkeypatch.setattr(MW, "menuDict", QMenu(), raising=False)
         monkeypatch.setattr(MW, "menuDictGroup", QActionGroup(MW), raising=False)
+    MW.startedLibraries = started
     yield MW
 
     # Rebuild the real menu
     monkeypatch.undo()
+    del MW.startedLibraries
     if hasattr(MW, "menuDict"):
         MW.updateMenuDict()
 
@@ -539,3 +554,123 @@ def test_dictionaryMenuKeepsLegacyDictionaryName(dictionaryMenu):
     settings.dict = "zz_ZZ"
     MW.updateMenuDict()
     assert settings.dict == "Fake:aa_AA"
+
+
+def test_dictionaryMenuStartsLibrariesOnlyWhenNeeded(dictionaryMenu):
+    from PyQt5.QtWidgets import qApp
+    from manuskript import settings
+    MW = dictionaryMenu
+
+    settings.dict = "Fake:aa_AA"
+    MW.updateMenuDict()
+    assert "Lazy" not in MW.startedLibraries
+    startActions = [a for a in MW.menuDict.actions()
+                    if a.text() == "Start Lazy to list its dictionaries"]
+    assert len(startActions) == 1
+
+    # The user asks for it
+    startActions[0].trigger()
+    qApp.processEvents()
+    assert "Lazy" in MW.startedLibraries
+    assert ("Lazy", "dd_DD") in [(a.data, a.text().replace("&", ""))
+                                 for a in MW.menuDictGroup.actions()]
+    assert checkedDictionaries(MW) == [("Fake", "aa_AA")]
+
+    # The project uses it
+    MW.startedLibraries.clear()
+    settings.dict = "Lazy:dd_DD"
+    MW.updateMenuDict()
+    assert "Lazy" in MW.startedLibraries
+    assert checkedDictionaries(MW) == [("Lazy", "dd_DD")]
+
+
+###############################################################################
+# LanguageTool startup
+###############################################################################
+
+@pytest.fixture
+def fakeLanguageTool(monkeypatch):
+    """language_tool_python whose LanguageTool records how often it was
+    created (each one would start a Java server)."""
+    lt = types.SimpleNamespace(created=[], error=None, which=[])
+
+    class FakeLanguageTool:
+        def __init__(self, language=None):
+            lt.created.append(language)
+            if lt.error:
+                raise lt.error
+
+        def _get_languages(self):
+            return {"auto", "en", "en-US", "de", "de-DE"}
+
+    def which(name):
+        lt.which.append(name)
+        return "/usr/bin/" + name
+
+    def system(command):
+        raise AssertionError("os.system({!r}) was called".format(command))
+
+    monkeypatch.setattr(S, "languagetool", types.SimpleNamespace(
+        LanguageTool=FakeLanguageTool,
+        utils=types.SimpleNamespace(get_locale_language=lambda: "hu_HU")))
+    monkeypatch.setattr(S, "use_language_check", False)
+    monkeypatch.setattr(S.LanguageToolDictionary, "_tool", None)
+    monkeypatch.setattr(S.LanguageToolDictionary, "_toolFailed", False,
+                        raising=False)
+    monkeypatch.setattr(S.LanguageToolDictionary, "_javaInstalled", None,
+                        raising=False)
+    monkeypatch.setattr(S.shutil, "which", which)
+    monkeypatch.setattr(S.os, "system", system)
+    monkeypatch.setattr(S.Spellchecker, "implementations", [S.LanguageToolDictionary])
+    return lt
+
+
+def test_languageToolIsOnlyStartedWhenNeeded(fakeLanguageTool):
+    lt = fakeLanguageTool
+    for i in range(3):
+        assert S.Spellchecker.isInstalled()
+        assert S.Spellchecker.availableLibraries() == ["LanguageTool"]
+        assert S.Spellchecker.availableDictionaries() == {"LanguageTool": None}
+    assert lt.created == []
+    assert lt.which == ["java"]
+
+    S.Spellchecker.startLibrary("LanguageTool")
+    S.Spellchecker.startLibrary("LanguageTool")
+    # A language that LanguageTool supports, whatever the system locale
+    assert lt.created == ["en-US"]
+    assert S.Spellchecker.availableDictionaries() == {
+        "LanguageTool": ["auto", "de", "de-DE", "en", "en-US"]}
+    assert lt.created == ["en-US"]
+
+
+def test_languageToolStartFailureIsRemembered(fakeLanguageTool):
+    lt = fakeLanguageTool
+    lt.error = ValueError("unsupported language")
+    S.Spellchecker.startLibrary("LanguageTool")
+    S.Spellchecker.startLibrary("LanguageTool")
+    assert S.LanguageToolDictionary.getTool() is None
+    assert lt.created == ["en-US"]
+    assert not S.LanguageToolDictionary.isInstalled()
+    assert S.Spellchecker.availableDictionaries() == {}
+    assert S.Spellchecker.getDictionary("LanguageTool:en-US") is None
+
+
+def test_languageToolIsNotStartedForTheDefaultDictionary(fakeLanguageTool,
+                                                        monkeypatch):
+    lt = fakeLanguageTool
+    fakeLocale(monkeypatch, "de_DE")
+    fakeEnchant(monkeypatch, ["en_US"], "de_DE")
+    monkeypatch.setattr(S.Spellchecker, "implementations",
+                        [S.EnchantDictionary, S.LanguageToolDictionary])
+    # Finding out if LanguageTool has German would start it
+    assert S.Spellchecker.getDefaultDictionary() == "PyEnchant:en_US"
+    assert lt.created == []
+
+    S.Spellchecker.startLibrary("LanguageTool")
+    assert S.Spellchecker.getDefaultDictionary() == "LanguageTool:de-DE"
+
+
+def test_languageToolNeedsJava(fakeLanguageTool, monkeypatch):
+    monkeypatch.setattr(S.shutil, "which", lambda name: None)
+    assert not S.Spellchecker.isInstalled()
+    assert fakeLanguageTool.created == []

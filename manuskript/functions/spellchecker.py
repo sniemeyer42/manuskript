@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, string
+import os, gzip, json, glob, re, shutil, string
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
@@ -133,11 +133,25 @@ class Spellchecker:
 
     @staticmethod
     def availableDictionaries():
+        """
+        Returns the dictionaries of every installed library. They are None for
+        a library that has to be started first (see startLibrary).
+        """
         dictionaries = OrderedDict()
         for impl in Spellchecker.implementations:
             if impl.isInstalled():
-                dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
+                if impl.isStarted():
+                    dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
+                else:
+                    dictionaries[impl.getLibraryName()] = None
         return dictionaries
+
+    @staticmethod
+    def startLibrary(lib):
+        """Starts the library named lib, which can take a while."""
+        for impl in Spellchecker.implementations:
+            if impl.isInstalled() and impl.getLibraryName() == lib:
+                impl.start()
 
     @staticmethod
     def normalizeDictName(lib, dictionary):
@@ -146,9 +160,12 @@ class Spellchecker:
     @staticmethod
     def getDefaultDictionary():
         # A dictionary in the language of the system is better than one in
-        # another language from a library of higher priority.
+        # another language from a library of higher priority. A library that
+        # is not started is only started if no other one has a dictionary.
         for strict in [True, False]:
             for impl in Spellchecker.implementations:
+                if strict and not impl.isStarted():
+                    continue
                 default = impl.getDefaultDictionary(strict)
                 if default:
                     return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
@@ -236,6 +253,18 @@ class BasicDictionary:
     @staticmethod
     def isInstalled():
         raise NotImplementedError
+
+    @staticmethod
+    def isStarted():
+        """
+        Returns False if the library has to be started (see start) before it
+        can list its dictionaries, because starting it is slow.
+        """
+        return True
+
+    @staticmethod
+    def start():
+        pass
 
     @staticmethod
     def getDefaultDictionary(strict=False):
@@ -647,6 +676,8 @@ def get_languagetool_locale_language():
 class LanguageToolDictionary(BasicDictionary):
 
     _tool = None
+    _toolFailed = False
+    _javaInstalled = None
 
     def __init__(self, name):
         BasicDictionary.__init__(self, name)
@@ -659,11 +690,16 @@ class LanguageToolDictionary(BasicDictionary):
 
     @staticmethod
     def getTool():
-        if LanguageToolDictionary._tool == None:
+        # Creating the tool starts a LanguageTool server in Java (after
+        # downloading LanguageTool the first time), so only try it once.
+        if LanguageToolDictionary._tool is None and not LanguageToolDictionary._toolFailed:
             try:
-                LanguageToolDictionary._tool = languagetool.LanguageTool()
-            except:
-                return None
+                # The language of this tool does not matter, but the language of
+                # the system locale might not be supported by LanguageTool.
+                LanguageToolDictionary._tool = languagetool.LanguageTool("en-US")
+            except Exception as e:
+                LOGGER.warning("Could not start LanguageTool: %s", e)
+                LanguageToolDictionary._toolFailed = True
 
         return LanguageToolDictionary._tool
 
@@ -680,22 +716,32 @@ class LanguageToolDictionary(BasicDictionary):
 
     @staticmethod
     def isInstalled():
-        if (languagetool != None) and (LanguageToolDictionary.getTool() != None):
+        if languagetool is None or LanguageToolDictionary._toolFailed:
+            return False
 
-            # This check, if Java is installed, is necessary to
-            # make sure LanguageTool can be run without problems.
-            #
-            return (os.system('java -version') == 0)
+        # LanguageTool needs Java. Does not start LanguageTool, which is slow
+        # (see isStarted).
+        if LanguageToolDictionary._javaInstalled is None:
+            LanguageToolDictionary._javaInstalled = shutil.which("java") is not None
 
-        return False
+        return LanguageToolDictionary._javaInstalled
+
+    @staticmethod
+    def isStarted():
+        return LanguageToolDictionary._tool is not None
+
+    @staticmethod
+    def start():
+        LanguageToolDictionary.getTool()
 
     @staticmethod
     def availableDictionaries():
         if LanguageToolDictionary.isInstalled():
             tool = LanguageToolDictionary.getTool()
-            languages = list(get_languagetool_languages(tool))
-            languages.sort()
-            return languages
+            if tool:
+                languages = list(get_languagetool_languages(tool))
+                languages.sort()
+                return languages
 
         return []
 
