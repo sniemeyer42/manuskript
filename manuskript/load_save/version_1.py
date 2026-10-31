@@ -967,12 +967,18 @@ def loadProject(project, zip=None):
             if not s:
                 continue
 
-            m = re.search(r"^(.*?):\s*(.*)$", s)
-            txt = m.group(1)
-            col = m.group(2)
+            # "name:   color" (as written by saveProject). The name can contain ":",
+            # and labels without color are written without ":".
+            m = re.match(r"^(.*):\s*(\S+)\s*$", s)
+            if m and QColor.isValidColor(m.group(2)):
+                txt, col = m.group(1), m.group(2)
+            else:
+                txt, col = s, None
             LOGGER.debug("* Add status: {} ({})".format(txt, col))
-            icon = iconFromColorString(col)
-            mdl.appendRow(QStandardItem(icon, txt))
+            if col:
+                mdl.appendRow(QStandardItem(iconFromColorString(col), txt))
+            else:
+                mdl.appendRow(QStandardItem(txt))
 
     else:
         errors.append("labels.txt")
@@ -1369,8 +1375,8 @@ def parseMMDFile(text, asDict=False):
                 descr = ""
                 val = ""
 
-                # Store new values
-                descr = m.group(1)
+                # Store new values (formatMetaData() escapes ":" in names)
+                descr = m.group(1).replace("_.._", ":")
                 val = m.group(2)
 
             elif s[:4] == "    ":

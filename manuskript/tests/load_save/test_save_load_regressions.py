@@ -541,3 +541,33 @@ def test_open_project_with_unreadable_files(MW, tmp_path):
         for f in unreadable:
             os.chmod(f, 0o644)
         MW.closeProject()
+
+
+def test_colons_in_names(sampleProject):
+    """Character infos and labels whose name contains ":" are saved and loaded unchanged."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QStandardItem, QColor
+    from manuskript.functions import iconColor, iconFromColor
+    from manuskript.models.characterModel import CharacterInfo
+    MW = sampleProject
+    c = MW.mdlCharacter.characters[0]
+    c.infos.append(CharacterInfo(c, "Height: (cm)", "182"))
+    MW.mdlLabels.appendRow(QStandardItem(iconFromColor(QColor("#ff0000")), "TODO: fix"))
+    MW.mdlLabels.appendRow(QStandardItem("No color: here"))
+
+    def labels():
+        mdl = MW.mdlLabels
+        out = []
+        for i in range(1, mdl.rowCount()):
+            icon = mdl.data(mdl.index(i, 0), Qt.DecorationRole)
+            out.append((mdl.data(mdl.index(i, 0)),
+                        iconColor(icon).name(QColor.HexRgb) if icon is not None else None))
+        return out
+
+    before = labels()
+    assert before[-2:] == [("TODO: fix", "#ff0000"), ("No color: here", None)]
+    for i in range(2):
+        reload(MW)
+        c = MW.mdlCharacter.characters[0]
+        assert [(i.description, i.value) for i in c.infos][-1] == ("Height: (cm)", "182")
+        assert labels() == before
