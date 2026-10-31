@@ -304,7 +304,11 @@ class textEditView(QTextEdit):
         """QTextDocument::toPlainText() replaces NBSP with spaces, which we don't want.
         QTextDocument::toRawText() replaces nothing, but that leaves fancy paragraph and line separators that users would likely complain about.
         This reimplements toPlainText(), except without the NBSP destruction."""
-        return self.document().toRawText().translate(PLAIN_TRANSLATION_TABLE)
+        text = self.document().toRawText()
+        # Much faster than str.translate(), which does a dict lookup per char.
+        for char, replacement in PLAIN_TRANSLATION_TABLE.items():
+            text = text.replace(chr(char), replacement)
+        return text
     toPlainText = toIdealText
 
     def updateText(self):

@@ -14,6 +14,7 @@ from manuskript import settings
 from manuskript.enums import Outline
 from manuskript.ui.highlighters import MarkdownHighlighter
 from manuskript.ui.views.MDEditView import MDEditView
+from manuskript.ui.views.textEditView import textEditView
 
 
 def pump():
@@ -404,3 +405,20 @@ def test_MDEditView_keepsOneHighlighter(textItem):
     assert isinstance(ed.highlighter, MarkdownHighlighter)
     assert ed.toPlainText() == "Second text."
     ed.close()
+
+
+def test_textEditView_toIdealText():
+    """
+    Like QTextDocument.toPlainText(), but keeps non-breaking spaces.
+    """
+    ed = textEditView(None)
+    ed.setPlainText("a\u00a0b\nc")
+    cursor = ed.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    cursor.insertText("d\u2028e")
+    cursor.insertTable(1, 1)
+    cursor.insertText("f")
+    assert ed.document().toRawText() == \
+        "a\u00a0b\u2029cd\u2028e\ufdd0f\ufdd1"
+    assert ed.toIdealText() == "a\u00a0b\ncd\ne\nf\n"
+    assert ed.toPlainText() == ed.toIdealText()
