@@ -402,3 +402,92 @@ def test_write_error_does_not_stop_save(sampleProject):
     assert loadSave.saveProject()
     with open(path, encoding="utf8") as f:
         assert f.read().endswith("Not saved")
+
+
+def test_zip_save_is_atomic(sampleProject, tmp_path, monkeypatch):
+    """A failed save to a single file must keep the previous version (#811)."""
+    import zipfile
+    from manuskript import settings
+    MW = sampleProject
+    path = os.path.join(str(tmp_path), "zipped.msk")
+    monkeypatch.setattr(settings, "saveToZip", True)
+    MW.currentProject = path
+    assert loadSave.saveProject()
+    with zipfile.ZipFile(path) as zf:
+        good = {f: zf.read(f) for f in zf.namelist()}
+
+    # The disk gets full while saving
+    def writestr(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as m:
+        m.setattr(zipfile.ZipFile, "writestr", writestr)
+        MW.mdlOutline.setData(lastText(MW).index(Outline.text), "New text")
+        assert not loadSave.saveProject()
+
+    with zipfile.ZipFile(path) as zf:
+        assert {f: zf.read(f) for f in zf.namelist()} == good
+    assert [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")] == []
+
+    # The new version is written to the disk before it replaces the previous one
+    synced = []
+    realFsync = os.fsync
+    with monkeypatch.context() as m:
+        m.setattr(os, "fsync", lambda fd: synced.append(fd) or realFsync(fd))
+        assert loadSave.saveProject()
+    assert len(synced) == 1
+    with zipfile.ZipFile(path) as zf:
+        assert any(b"New text" in zf.read(f) for f in zf.namelist())
+
+
+def test_zip_save_keeps_symlink_and_mode(sampleProject, tmp_path, monkeypatch):
+    """A single-file project opened through a symbolic link (e.g. to a synced folder) is
+    saved to the file the link points to, with its mode."""
+    import stat
+    import zipfile
+    from manuskript import settings
+    MW = sampleProject
+    monkeypatch.setattr(settings, "saveToZip", True)
+    real = os.path.join(str(tmp_path), "synced", "novel.msk")
+    os.makedirs(os.path.dirname(real))
+    MW.currentProject = real
+    assert loadSave.saveProject()
+    os.chmod(real, 0o600)
+    link = os.path.join(str(tmp_path), "novel.msk")
+    try:
+        os.symlink(real, link)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available")
+
+    MW.currentProject = link
+    MW.mdlOutline.setData(lastText(MW).index(Outline.text), "Text written today")
+    assert loadSave.saveProject()
+
+    assert os.path.islink(link)
+    with zipfile.ZipFile(real) as zf:
+        assert any(b"Text written today" in zf.read(f) for f in zf.namelist())
+    assert stat.S_IMODE(os.stat(real).st_mode) == 0o600
+    assert sorted(os.listdir(os.path.dirname(real))) == ["novel.msk"]
+
+
+def test_open_damaged_project_file(MW, tmp_path):
+    """A damaged .msk file is reported, it does not crash the app (#1128)."""
+    path = copySample(tmp_path)
+    with open(path, "wb") as f:
+        f.write(b"PK\x03\x04\xa5\xff truncated zip")
+    MW.closeProject()
+    MW.loadProject(path)
+    assert MW.currentProject is None
+
+
+def test_open_project_file_with_newline(MW, tmp_path):
+    """The version number in the .msk file can be followed by a newline."""
+    path = copySample(tmp_path)
+    with open(path, "w") as f:
+        f.write("1\n")
+    MW.closeProject()
+    MW.loadProject(path)
+    try:
+        assert MW.currentProject == path
+    finally:
+        MW.closeProject()

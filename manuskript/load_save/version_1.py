@@ -7,6 +7,7 @@
 # versioning and third-party editing.
 
 import errno
+import io
 import os
 import re
 import shutil
@@ -115,13 +116,14 @@ def slugify(name):
     return newName
 
 
-def writeFile(filename, content):
+def writeFile(filename, content, sync=False):
     """
     Writes content (str or bytes) to filename, through a temporary file that replaces it only
     once it has been written completely: if writing fails (disk full, quota...), the previous
     version of the file is left untouched, and no truncated file is left behind.
     A symbolic link is written through (its target is replaced), and the mode of an existing
     file is kept. A file that is not writable is not replaced.
+    @param sync: if True, the new content is flushed to the disk before it replaces the file.
     @raise OSError: if the file cannot be written.
     """
     filename = os.path.realpath(filename)
@@ -132,11 +134,14 @@ def writeFile(filename, content):
     tmp = os.path.join(os.path.dirname(filename), "." + os.path.basename(filename) + ".tmp")
     try:
         if type(content) == bytes:
-            with open(tmp, "wb") as f:
-                f.write(content)
+            f = open(tmp, "wb")
         else:
-            with open(tmp, "wt", encoding="utf8", newline="\n") as f:
-                f.write(content)
+            f = open(tmp, "wt", encoding="utf8", newline="\n")
+        with f:
+            f.write(content)
+            if sync:
+                f.flush()
+                os.fsync(f.fileno())
         if os.path.exists(filename):
             # Best effort: some file systems do not support chmod (network or FUSE mounts...)
             try:
@@ -375,12 +380,21 @@ def saveProject(zip=None):
         #     "_" + os.path.basename(project)
         # )
 
-        zf = zipfile.ZipFile(project, mode="w")
+        # The project file is replaced only once the new version is complete (and on disk):
+        # an interrupted save (disk full, removed drive...) must not destroy the previous
+        # version of the project, which is the only copy.
+        try:
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, mode="w") as zf:
+                for filename, content in files:
+                    zf.writestr(filename, content, compress_type=compression)
 
-        for filename, content in files:
-            zf.writestr(filename, content, compress_type=compression)
+            writeFile(project, data.getvalue(), sync=True)
 
-        zf.close()
+        except OSError as e:
+            LOGGER.error("Cannot save project %s: %s", project, e)
+            return False
+
         return True
 
     ####################################################################################################################
