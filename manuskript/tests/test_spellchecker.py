@@ -8,6 +8,7 @@ import importlib.util
 import json
 import sys
 import types
+from collections import OrderedDict
 
 import pytest
 
@@ -433,3 +434,88 @@ def test_setDictEnablesSpellcheckAgain(monkeypatch):
     editor = textEditView(spellcheck=False, highlighting=True, dict="Fake:good")
     editor.setDict("Fake:good")
     assert not editor.spellcheck
+
+
+###############################################################################
+# Tools > Dictionary menu
+###############################################################################
+
+@pytest.fixture
+def dictionaryMenu(MW, monkeypatch):
+    """MainWindow whose dictionary menu lists fake dictionaries."""
+    from PyQt5.QtWidgets import QMenu, QActionGroup
+    from PyQt5.QtCore import Qt
+    from manuskript import functions as F
+    from manuskript import settings
+
+    available = OrderedDict([("Fake", ["aa_AA", "bb_BB"]),
+                             ("Other", ["bb_BB", "cc_CC"])])
+    monkeypatch.setattr(S.Spellchecker, "isInstalled", staticmethod(lambda: True))
+    monkeypatch.setattr(S.Spellchecker, "availableDictionaries",
+                        staticmethod(lambda: available))
+    monkeypatch.setattr(S.Spellchecker, "supportedLibraries",
+                        staticmethod(lambda: OrderedDict([("Fake", None),
+                                                          ("Other", None)])))
+    monkeypatch.setattr(S.Spellchecker, "getDefaultDictionary",
+                        staticmethod(lambda: "Fake:aa_AA"))
+    monkeypatch.setattr(S.Spellchecker, "getDictionary",
+                        staticmethod(lambda name: None))
+    # Connect as in the application, not as in the other tests (see
+    # tests/__init__.py)
+    monkeypatch.setattr(F, "AUC", Qt.AutoConnection | Qt.UniqueConnection)
+    monkeypatch.setattr(settings, "dict", settings.dict)
+    if not hasattr(MW, "menuDict"):
+        monkeypatch.setattr(MW, "menuDict", QMenu(), raising=False)
+        monkeypatch.setattr(MW, "menuDictGroup", QActionGroup(MW), raising=False)
+    yield MW
+
+    # Rebuild the real menu
+    monkeypatch.undo()
+    if hasattr(MW, "menuDict"):
+        MW.updateMenuDict()
+
+
+def checkedDictionaries(MW):
+    return [(a.data, a.text().replace("&", ""))
+            for a in MW.menuDictGroup.actions() if a.isChecked()]
+
+
+def test_dictionaryMenuCanBeRebuilt(dictionaryMenu, monkeypatch):
+    from manuskript import settings
+    MW = dictionaryMenu
+
+    # The menu is rebuilt at startup and on every project load. Many actions
+    # make it likely that new ones get the address of deleted ones, which
+    # PyQt still remembers as connected for a while: connecting them with
+    # Qt.UniqueConnection then raised "TypeError: connection is not unique".
+    available = OrderedDict([("Fake", ["aa_{:02}".format(i) for i in range(30)]),
+                             ("Other", ["bb_BB"])])
+    monkeypatch.setattr(S.Spellchecker, "availableDictionaries",
+                        staticmethod(lambda: available))
+    settings.dict = "Fake:aa_00"
+    for i in range(20):
+        MW.updateMenuDict()
+    assert len(MW.menuDictGroup.actions()) == 31
+    assert checkedDictionaries(MW) == [("Fake", "aa_00")]
+
+    # The actions still work
+    [action] = [a for a in MW.menuDictGroup.actions()
+                if a.text().replace("&", "") == "aa_05"]
+    action.trigger()
+    assert settings.dict == "Fake:aa_05"
+
+
+def test_dictionaryMenuDoesNotPileUpActions(dictionaryMenu):
+    from manuskript import settings
+    MW = dictionaryMenu
+
+    settings.dict = "Fake:bb_BB"
+    for i in range(3):
+        MW.updateMenuDict()
+    assert len(MW.menuDictGroup.actions()) == 4
+    assert checkedDictionaries(MW) == [("Fake", "bb_BB")]
+
+    settings.dict = "Other:cc_CC"
+    MW.updateMenuDict()
+    assert len(MW.menuDictGroup.actions()) == 4
+    assert checkedDictionaries(MW) == [("Other", "cc_CC")]

@@ -1772,6 +1772,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if not Spellchecker.isInstalled():
             return
 
+        # The actions are owned by the menu, so this deletes them, which also
+        # removes them from menuDictGroup.
         self.menuDict.clear()
         dictionaries = Spellchecker.availableDictionaries()
 
@@ -1794,18 +1796,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         for lib, dicts in dictionaries.items():
             if len(dicts) > 0:
-                a = QAction(lib, self)
+                a = QAction(lib, self.menuDict)
             else:
-                a = QAction(self.tr("{} has no installed dictionaries").format(lib), self)
+                a = QAction(self.tr("{} has no installed dictionaries").format(lib), self.menuDict)
             a.setEnabled(False)
             self.menuDict.addAction(a)
             for i in dicts:
-                a = QAction(i, self)
+                a = QAction(i, self.menuDict)
                 a.data = lib
                 a.setCheckable(True)
                 if Spellchecker.normalizeDictName(lib, i) == settings.dict:
                     a.setChecked(True)
-                a.triggered.connect(self.setDictionary, F.AUC)
+                # Not with F.AUC: PyQt still knows the connections of deleted
+                # actions for a while, so Qt.UniqueConnection can raise
+                # "connection is not unique" for this new action.
+                a.triggered.connect(self.setDictionary)
                 self.menuDictGroup.addAction(a)
                 self.menuDict.addAction(a)
             self.menuDict.addSeparator()
@@ -1817,7 +1822,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         for lib, requirement in Spellchecker.supportedLibraries().items():
             if lib not in dictionaries:
-                a = QAction(self.tr("{}{} is not installed").format(lib, requirement or ""), self)
+                a = QAction(self.tr("{}{} is not installed").format(lib, requirement or ""), self.menuDict)
                 a.setEnabled(False)
                 self.menuDict.addAction(a)
                 self.menuDict.addSeparator()
