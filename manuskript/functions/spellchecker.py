@@ -6,6 +6,9 @@ from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
 
+import logging
+LOGGER = logging.getLogger(__name__)
+
 try:
     import enchant
 except ImportError:
@@ -501,17 +504,27 @@ class SymSpellDictionary(BasicDictionary):
         # Since 6.3.8
         self._dict.delete_dictionary_entry(word)
 
+def get_languagetool_match_attribute(match, *names):
+    # language_tool_python >= 3.0 uses snake_case names for the attributes of
+    # a match (error_length), older releases use camelCase ones (errorLength).
+    for name in names:
+        try:
+            return getattr(match, name)
+        except AttributeError:
+            pass
+    raise AttributeError(names[0])
+
 def get_languagetool_match_errorLength(match):
     if use_language_check:
         return match.errorlength
     else:
-        return match.error_length
+        return get_languagetool_match_attribute(match, "error_length", "errorLength")
 
 def get_languagetool_match_ruleIssueType(match):
     if use_language_check:
         return match.locqualityissuetype
     else:
-        return match.rule_issue_type
+        return get_languagetool_match_attribute(match, "rule_issue_type", "ruleIssueType")
 
 def get_languagetool_match_message(match):
     if use_language_check:
@@ -520,6 +533,10 @@ def get_languagetool_match_message(match):
         return match.message
 
 class LanguageToolCache:
+
+    # Whether the last check failed: a server that died would otherwise log a
+    # warning for every paragraph.
+    _failing = False
 
     def __init__(self, tool, text):
         self._length = len(text)
@@ -531,17 +548,29 @@ class LanguageToolCache:
     def _buildMatches(self, tool, text):
         matches = []
 
-        for match in tool.check(text):
-            start = match.offset
-            end = start + get_languagetool_match_errorLength(match)
+        # This runs while highlighting, where an exception would terminate
+        # the application. If the server fails (or its API changed), only
+        # skip the check of this text.
+        try:
+            for match in tool.check(text):
+                start = match.offset
+                end = start + get_languagetool_match_errorLength(match)
 
-            basic_match = BasicMatch(start, end)
-            basic_match.locqualityissuetype = get_languagetool_match_ruleIssueType(match)
-            basic_match.replacements = match.replacements
-            basic_match.msg = get_languagetool_match_message(match)
+                basic_match = BasicMatch(start, end)
+                basic_match.locqualityissuetype = get_languagetool_match_ruleIssueType(match)
+                basic_match.replacements = match.replacements
+                basic_match.msg = get_languagetool_match_message(match)
 
-            matches.append(basic_match)
+                matches.append(basic_match)
+        except Exception as e:
+            if LanguageToolCache._failing:
+                LOGGER.debug("LanguageTool check failed: %s", e)
+            else:
+                LOGGER.warning("LanguageTool check failed: %s", e)
+                LanguageToolCache._failing = True
+            return []
 
+        LanguageToolCache._failing = False
         return matches
 
     def update(self, tool, text):
