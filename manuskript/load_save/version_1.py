@@ -865,7 +865,8 @@ def loadProject(project, zip=None):
 
     mdl = mw.mdlCharacter
     LOGGER.debug("Reading Characters:")
-    for f in [f for f in files if "characters" in f]:
+    # Only files in the top-level "characters" folder (not e.g. a scene titled "Main characters")
+    for f in [f for f in files if f.split(os.path.sep)[0] == "characters"]:
         md, body = parseMMDFile(files[f])
         c = mdl.addCharacter()
         c.lastPath = f
@@ -899,7 +900,8 @@ def loadProject(project, zip=None):
 
     mdl = mw.mdlOutline
     LOGGER.debug("Reading outline:")
-    paths = [f for f in files if "outline" in f]
+    # Only files in the top-level "outline" folder (not e.g. a character named "outline")
+    paths = [f for f in files if f.split(os.path.sep)[0] == "outline"]
     outline = OrderedDict()
 
     # We create a structure of imbricated OrderedDict to store the whole tree.
