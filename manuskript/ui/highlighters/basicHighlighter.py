@@ -71,7 +71,8 @@ class BasicHighlighter(QSyntaxHighlighter):
         self.rehighlight()
 
     def setMisspelledColor(self, color):
-        self._errorColors['misspelled'] = color
+        self.spellingErrorColor = QColor(color)
+        self._errorColors['misspelling'] = self.spellingErrorColor
 
     def updateColorScheme(self, rehighlight=True):
         """
@@ -108,6 +109,8 @@ class BasicHighlighter(QSyntaxHighlighter):
                                            .3)
             self.linkColor = QColor(S.link)
             self.spellingErrorColor = QColor(opt["Text/Misspelled"])
+
+        self._errorColors['misspelling'] = self.spellingErrorColor
 
         if rehighlight:
             self.rehighlight()

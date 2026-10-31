@@ -828,3 +828,31 @@ def test_findSuggestionsOnlyForOneWord():
     assert d.findSuggestions(text, 8, 19) == []        # hello world
     [match] = d.findSuggestions(text, 4, 7)            # dgo
     assert (match.start, match.end) == (4, 7)
+
+
+def test_misspelledColorSetting(monkeypatch):
+    from PyQt5.QtGui import QColor
+    from manuskript import settings
+    from manuskript.ui.views.textEditView import textEditView
+
+    fake = FakeDictionary()
+    monkeypatch.setattr(settings, "spellcheck", True)
+    monkeypatch.setattr(S.Spellchecker, "getDictionary",
+                        staticmethod(lambda name: fake))
+    editor = textEditView(spellcheck=True, highlighting=True, dict="Fake:fake")
+    editor.setPlainText("the dgo is here\n")
+
+    def underlineColor():
+        block = editor.document().firstBlock()
+        return [r.format.underlineColor().name() for r in block.layout().formats()
+                if r.format.underlineStyle() != 0]
+
+    # Settings > Editor
+    monkeypatch.setitem(settings.textEditor, "misspelled", "#0000ff")
+    editor.highlighter.updateColorScheme()
+    assert underlineColor() == ["#0000ff"]
+
+    # Themes
+    editor.highlighter.setMisspelledColor(QColor("#00ff00"))
+    editor.highlighter.rehighlight()
+    assert underlineColor() == ["#00ff00"]
