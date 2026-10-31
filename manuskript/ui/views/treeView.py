@@ -93,8 +93,10 @@ class treeView(QTreeView, dndView, outlineBasics):
     def mousePressEvent(self, event):
         # Prevent selecting item while right-clicking for popup menu!
         if event.button() != Qt.RightButton:
+            # Not outlineBasics.mousePressEvent: it does not exist, so it would
+            # call QAbstractItemView.mousePressEvent a second time (toggling
+            # ctrl+clicked items twice).
             QTreeView.mousePressEvent(self, event)
-            outlineBasics.mousePressEvent(self, event)
 
     def mouseReleaseEvent(self, event):
         QTreeView.mouseReleaseEvent(self, event)

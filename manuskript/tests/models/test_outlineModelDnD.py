@@ -410,3 +410,89 @@ def test_moveUpKeepsEditorIndex(MWSampleProject):
     assert childIDs(model, "29") == ["40", "42", "41"]
     assert editor.currentIndex.internalPointer().ID() == "42"
     assert editor.currentIndex.row() == 1
+
+
+@pytest.fixture
+def MWShown(MWSampleProject):
+    """The main window with the sample project, shown (so that views have a
+    geometry and can be clicked)."""
+    from PyQt5.QtCore import QEvent
+    from PyQt5.QtWidgets import qApp
+    MW = MWSampleProject
+    # Fewer editors to show (faster)
+    MW.mainEditor.closeAllTabs()
+    qApp.sendPostedEvents(None, QEvent.DeferredDelete)
+    MW.show()
+    MW.resize(1200, 800)
+    qApp.processEvents()
+    yield MW
+    MW.hide()
+
+
+def clickItem(view, ID, button=Qt.LeftButton, modifier=Qt.NoModifier):
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import qApp
+    index = view.model().getIndexByID(ID)
+    view.scrollTo(index)
+    qApp.processEvents()
+    pos = view.visualRect(index).center()
+    QTest.mouseClick(view.viewport(), button, modifier, pos)
+    qApp.processEvents()
+
+
+@pytest.mark.parametrize("viewName, tab", [("treeRedacOutline", "TabRedac"),
+                                           ("treeOutlineOutline", "TabOutline")])
+def test_ctrlClickMultiSelection(MWShown, viewName, tab):
+    """Ctrl+click adds an item to / removes it from the selection."""
+    from PyQt5.QtWidgets import qApp
+    MW = MWShown
+    MW.tabMain.setCurrentIndex(getattr(MW, tab))
+    view = getattr(MW, viewName)
+    view.expandAll()
+    qApp.processEvents()
+
+    clickItem(view, "40")
+    assert selectedIDs(view) == ["40"]
+    clickItem(view, "42", modifier=Qt.ControlModifier)
+    assert selectedIDs(view) == ["40", "42"]
+    clickItem(view, "37", modifier=Qt.ControlModifier)
+    assert selectedIDs(view) == ["37", "40", "42"]
+    clickItem(view, "40", modifier=Qt.ControlModifier)
+    assert selectedIDs(view) == ["37", "42"]
+    clickItem(view, "41")
+    assert selectedIDs(view) == ["41"]
+
+
+def test_editorTabSwitchSelectsItemInTree(MWShown):
+    """
+    Switching editor tabs selects the tab's item in the editor's tree (only
+    it, even if Ctrl is still held), and a Shift+click then selects the range
+    from that item.
+    """
+    from PyQt5.QtTest import QTest
+    from PyQt5.QtWidgets import qApp
+    MW = MWShown
+    MW.tabMain.setCurrentIndex(MW.TabRedac)
+    view = MW.treeRedacOutline
+    view.expandAll()
+    qApp.processEvents()
+    tabs = MW.mainEditor.currentTabWidget()
+
+    clickItem(view, "37")
+    clickItem(view, "41", modifier=Qt.ControlModifier)  # In a new tab
+    clickItem(view, "42")
+    assert tabs.count() == 2
+    assert selectedIDs(view) == ["42"]
+
+    tabs.setCurrentIndex(0)
+    qApp.processEvents()
+    assert selectedIDs(view) == ["37"]
+    clickItem(view, "38", modifier=Qt.ShiftModifier)
+    assert selectedIDs(view) == ["37", "38"]
+
+    # E.g. Ctrl+Tab
+    QTest.keyPress(MW.mainEditor, Qt.Key_Control, Qt.ControlModifier)
+    tabs.setCurrentIndex(1)
+    QTest.keyRelease(MW.mainEditor, Qt.Key_Control)
+    qApp.processEvents()
+    assert selectedIDs(view) == ["42"]
