@@ -530,7 +530,7 @@ class SymSpellDictionary(BasicDictionary):
     def removeWord(self, word):
         BasicDictionary.removeWord(self, word)
         # Since 6.3.8
-        self._dict.delete_dictionary_entry(word)
+        self._dict.delete_dictionary_entry(word.lower())
 
 def get_languagetool_match_attribute(match, *names):
     # language_tool_python >= 3.0 uses snake_case names for the attributes of

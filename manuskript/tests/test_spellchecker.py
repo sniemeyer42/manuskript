@@ -254,3 +254,16 @@ def test_symspellUnknownLanguage(fakeSymspell):
     d = S.Spellchecker.getDictionary("symspellpy:en")
     text = "The quick dog teh. "
     assert [m.getWord(text) for m in d.checkText(text)] == ["teh"]
+
+
+def test_symspellRemoveCustomWord(fakeSymspell):
+    d = S.Spellchecker.getDictionary("symspellpy:en")
+    text = "The Manuskript dog. "
+    assert [m.getWord(text) for m in d.checkText(text)] == ["Manuskript"]
+
+    d.addWord("Manuskript")
+    assert d.checkText(text) == []
+
+    d.removeWord("Manuskript")
+    assert not d.isCustomWord("Manuskript")
+    assert [m.getWord(text) for m in d.checkText(text)] == ["Manuskript"]
