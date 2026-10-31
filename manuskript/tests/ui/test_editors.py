@@ -5,7 +5,8 @@
 
 import pytest
 
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtCore import QEvent
+from PyQt5.QtGui import QSyntaxHighlighter, QTextCursor
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import qApp
 
@@ -385,4 +386,21 @@ def test_MDEditView_focusModeFromStartOfText(textItem, monkeypatch):
     ed.setTextCursor(cursor)
     pump()
     assert [faded(n) for n in range(3)] == [True, False, True]
+    ed.close()
+
+
+def test_MDEditView_keepsOneHighlighter(textItem):
+    """
+    Changing the edited item does not stack highlighters on the document.
+    """
+    item1, item2 = textItem("First text."), textItem("Second text.")
+    ed = editorFor(item1)
+    for item in [item2, item1, item2]:
+        ed.setCurrentModelIndex(item.index())
+        pump()
+    qApp.sendPostedEvents(None, QEvent.DeferredDelete)
+    highlighters = ed.document().findChildren(QSyntaxHighlighter)
+    assert highlighters == [ed.highlighter]
+    assert isinstance(ed.highlighter, MarkdownHighlighter)
+    assert ed.toPlainText() == "Second text."
     ed.close()

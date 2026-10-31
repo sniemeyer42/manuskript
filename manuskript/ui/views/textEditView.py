@@ -171,7 +171,15 @@ class textEditView(QTextEdit):
     def setupEditorForIndex(self, index):
         # Setting highlighter
         if self._highlighting:
-            self.highlighter = self._highlighterClass(self)
+            # A highlighter stays attached to the document until it is
+            # removed, so reuse it instead of stacking a new one each time.
+            if self.highlighter is not None and \
+                    type(self.highlighter) is not self._highlighterClass:
+                self.highlighter.setDocument(None)
+                self.highlighter.deleteLater()
+                self.highlighter = None
+            if self.highlighter is None:
+                self.highlighter = self._highlighterClass(self)
             self.highlighter.setDefaultBlockFormat(self._defaultBlockFormat)
             self.highlighter.updateColorScheme()
 
