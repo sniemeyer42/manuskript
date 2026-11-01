@@ -424,6 +424,10 @@ class textEditView(QTextEdit):
         self.currentDict = d
         if d:
             self._dict = Spellchecker.getDictionary(d)
+        # Spellcheck was switched off if no dictionary could be loaded before,
+        # so switch it back on when there is one now.
+        if settings.spellcheck and self._dict and self.highlighter:
+            self.spellcheck = True
         if self.highlighter:
             self.highlighter.rehighlight()
 

@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, string
+import os, gzip, json, glob, re, shutil
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
+
+import logging
+LOGGER = logging.getLogger(__name__)
 
 try:
     import enchant
@@ -16,13 +19,36 @@ try:
 except ImportError:
     pyspellchecker = None
 
+def getPackageVersion(module, distribution):
+    # Recent releases of some packages (symspellpy for example) have no
+    # __version__ anymore, so ask the metadata of the installed package first.
+    try:
+        from importlib.metadata import version
+        return version(distribution)
+    except Exception:
+        return getattr(module, "__version__", None)
+
+def isVersionAtLeast(version, minimum):
+    # distutils.version was removed in Python 3.12, and comparing the strings
+    # gets "6.10.1" < "6.3.8" wrong, so compare the numbers.
+    def numbers(v):
+        return tuple(int(n) for n in re.findall(r"\d+", str(v))[:3])
+    return bool(version) and numbers(version) >= numbers(minimum)
+
 SYMSPELLPY_MIN_VERSION = "6.3.8"
+
+def isSymspellpyUsable(module):
+    version = getPackageVersion(module, "symspellpy")
+    if version is None:
+        # Neither package metadata (a frozen application might have none) nor
+        # __version__: look for the API added in the minimum version.
+        return hasattr(getattr(module, "SymSpell", None), "delete_dictionary_entry")
+    return isVersionAtLeast(version, SYMSPELLPY_MIN_VERSION)
+
 try:
     import symspellpy
-    import distutils.version
 
-    if ((not hasattr(symspellpy, '__version__')) or
-        (distutils.version.LooseVersion(symspellpy.__version__) < SYMSPELLPY_MIN_VERSION)):
+    if not isSymspellpyUsable(symspellpy):
         symspellpy = None
 
 except ImportError:
@@ -39,6 +65,37 @@ try:
         use_language_check = True
 except:
     languagetool = None
+
+def pickDictionary(available, preferred, fallback=(), strict=False):
+    """
+    Returns the name in `available` matching the first possible name in
+    `preferred`: the same name (en-US is the same as en_US), else the same
+    language in another region (en_GB matches en_US). Unless strict, then
+    tries `fallback` the same way, and finally takes the first available
+    dictionary. Returns None if no dictionary was found.
+    """
+    available = list(available)
+
+    def normalized(name):
+        return name.replace("-", "_").lower()
+
+    def language(name):
+        return normalized(name).split("_")[0]
+
+    def find(names, key):
+        for name in names:
+            if name:
+                for a in available:
+                    if key(a) == key(name):
+                        return a
+        return None
+
+    for names in [preferred] if strict else [preferred, fallback]:
+        dictionary = find(names, normalized) or find(names, language)
+        if dictionary:
+            return dictionary
+
+    return available[0] if available and not strict else None
 
 class Spellchecker:
     dictionaries = {}
@@ -76,11 +133,25 @@ class Spellchecker:
 
     @staticmethod
     def availableDictionaries():
+        """
+        Returns the dictionaries of every installed library. They are None for
+        a library that has to be started first (see startLibrary).
+        """
         dictionaries = OrderedDict()
         for impl in Spellchecker.implementations:
             if impl.isInstalled():
-                dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
+                if impl.isStarted():
+                    dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
+                else:
+                    dictionaries[impl.getLibraryName()] = None
         return dictionaries
+
+    @staticmethod
+    def startLibrary(lib):
+        """Starts the library named lib, which can take a while."""
+        for impl in Spellchecker.implementations:
+            if impl.isInstalled() and impl.getLibraryName() == lib:
+                impl.start()
 
     @staticmethod
     def normalizeDictName(lib, dictionary):
@@ -88,10 +159,16 @@ class Spellchecker:
 
     @staticmethod
     def getDefaultDictionary():
-        for impl in Spellchecker.implementations:
-            default = impl.getDefaultDictionary()
-            if default:
-                return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
+        # A dictionary in the language of the system is better than one in
+        # another language from a library of higher priority. A library that
+        # is not started is only started if no other one has a dictionary.
+        for strict in [True, False]:
+            for impl in Spellchecker.implementations:
+                if strict and not impl.isStarted():
+                    continue
+                default = impl.getDefaultDictionary(strict)
+                if default:
+                    return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
         return None
 
     @staticmethod
@@ -140,6 +217,20 @@ class BasicMatch:
     def getWord(self, text):
         return text[self.start:self.end]
 
+# Apostrophes can be part of a word: isn't, isn’t
+APOSTROPHES = "'\u2019"
+
+# Endings after an apostrophe that dictionaries might not know as part of a
+# word: the possessive 's, and colloquial German (geht's, so'n, hab'n, auf'm,
+# so'ne)
+CLITICS = {"s", "n", "m", "ne", "nen", "nem"}
+
+# Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
+# Letters, digits and apostrophes, not preceded or followed by any of them. A
+# word at the very end of the text is not matched, so that a word is not
+# checked while it is being typed (see BasicHighlighter.highlightBlockAfter).
+WORDS = re.compile(r"(?<![^\W_]|['\u2019])((?:[^\W_]|['\u2019])+)(?=[^\w'\u2019]|_)")
+
 class BasicDictionary:
     def __init__(self, name):
         self._lang = name
@@ -163,7 +254,7 @@ class BasicDictionary:
 
     @staticmethod
     def getLibraryName():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def getLibraryRequirement():
@@ -171,75 +262,112 @@ class BasicDictionary:
 
     @staticmethod
     def getLibraryURL():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
     def isInstalled():
-        raise NotImplemented
+        raise NotImplementedError
 
     @staticmethod
-    def getDefaultDictionary():
-        raise NotImplemented
+    def isStarted():
+        """
+        Returns False if the library has to be started (see start) before it
+        can list its dictionaries, because starting it is slow.
+        """
+        return True
+
+    @staticmethod
+    def start():
+        pass
+
+    @staticmethod
+    def getDefaultDictionary(strict=False):
+        """
+        Returns the dictionary for the language of the system. Unless strict,
+        returns another one if there is none (see pickDictionary).
+        """
+        raise NotImplementedError
 
     @staticmethod
     def availableDictionaries():
-        raise NotImplemented
+        raise NotImplementedError
 
     def checkText(self, text):
-        # Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
-        WORDS = r'(?iu)((?:[^_\W]|\')+)[^A-Za-z0-9\']'
-        
-        #         (?iu) means case insensitive and Unicode
-        #              ((?:[^_\W]|\')+) means words exclude underscores but include apostrophes
-        #                              [^A-Za-z0-9\'] used with above hack to prevent spellcheck while typing word
-        #
-        # See also https://stackoverflow.com/questions/2062169/regex-w-in-utf-8
-
         matches = []
 
-        for word_object in re.finditer(WORDS, text):
-            word = word_object.group(1)
-            mispelled = self.isMisspelled(word)
-            if mispelled == False:
+        for word_object in WORDS.finditer(text):
+            start, end = word_object.span(1)
+            token = text[start:end]
+
+            # Apostrophes around a word are usually quotes ('hello world') or
+            # the possessive of a plural (dogs')
+            while start < end and text[start] in APOSTROPHES:
+                start += 1
+            while end > start and text[end - 1] in APOSTROPHES:
+                end -= 1
+
+            # Single letters are not checked
+            if end - start < 2:
                 continue
-            punctuation = string.punctuation.replace('-', '')
 
-            FALSE_POSITIVE = r'^[^\w]|([^{}])$'.format(punctuation)
-
-            #inorder to prevent apostrophes causing false positives and keep the same functionality otherwise,
-            #check that the word doesn't have any additional punctuation on it.
-            if re.match(FALSE_POSITIVE, word):
-                # ^[^\w] checks that it doesn't start with a word character
-                # ([\p{P}'])$ checks it doesn't end with punctuation characters
-
-                apostrophe_WORDS = r'(?iu)\b(?<=[\s\'"(])((?:[a-zA-Z]|\')+)(?=\b)'
-
-                # \b(?<=[\s\'"(]) looks for nonword characters and starts grouping after
-                # (?=\b) looks for the word boundary
-                # ((?:[a-zA-Z]|\')+) greedily matches for letters and apostrophes
-                
-                temp = re.match(apostrophe_WORDS, word)
-                mispelled = self.isMisspelled(temp.group(1)) if temp else False
-
-            if (mispelled and not self.isCustomWord(word)):
-
-                matches.append(BasicMatch(
-                    word_object.start(1), word_object.end(1)
-                ))
+            word = text[start:end]
+            if self.isWordMisspelled(word) and (word == token or self.isWordMisspelled(token)):
+                matches.append(BasicMatch(start, end))
 
         return matches
 
+    def isWordMisspelled(self, word):
+        """
+        Like isMisspelled, but also accepts custom words, and words that the
+        dictionary only knows with an ASCII apostrophe (isn’t) or without a
+        clitic (geht's).
+        """
+        if not self.isMisspelled(word) or self.isCustomWord(word):
+            return False
+
+        # Some dictionaries only know the ASCII apostrophe: isn’t -> isn't
+        if "\u2019" in word and not self.isMisspelled(word.replace("\u2019", "'")):
+            return False
+
+        # Some dictionaries know no contractions: geht's -> geht + 's. Only
+        # for known clitics, since dictionaries know most parts of words
+        # (your'e is not your + e), and only after a word ('ne has none).
+        parts = re.split("[" + APOSTROPHES + "]", word)
+        clitic = parts[-1]
+        head = word[:-len(clitic) - 1]
+        if len(parts) > 1 and clitic.lower() in CLITICS and head.strip(APOSTROPHES):
+            if not self.isMisspelled(head):
+                return False
+
+        return True
+
     def isMisspelled(self, word):
-        raise NotImplemented
+        # A word without letters (empty or only apostrophes) is not asked:
+        # enchant raises ValueError for an empty one, which would close the
+        # application while highlighting.
+        if not word.strip(APOSTROPHES):
+            return False
+        return self._isMisspelled(word)
 
     def getSuggestions(self, word):
-        raise NotImplemented
+        if not word.strip(APOSTROPHES):
+            return []
+        return self._getSuggestions(word)
+
+    def _isMisspelled(self, word):
+        """Asks the library whether word is misspelled."""
+        raise NotImplementedError
+
+    def _getSuggestions(self, word):
+        """Asks the library for the spellings it suggests for word."""
+        raise NotImplementedError
 
     def findSuggestions(self, text, start, end):
         if start < end:
             word = text[start:end]
 
-            if (self.isMisspelled(word) and not self.isCustomWord(word)):
+            # A selection of several words is not a misspelled word
+            if not any(c.isspace() for c in word) and self.isWordMisspelled(word):
                 match = BasicMatch(start, end)
                 match.replacements = self.getSuggestions(word)
 
@@ -306,25 +434,18 @@ class EnchantDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not EnchantDictionary.isInstalled():
             return None
 
-        default_locale = enchant.get_default_language()
-        if default_locale and not enchant.dict_exists(default_locale):
-            default_locale = None
+        return pickDictionary(EnchantDictionary.availableDictionaries(),
+                              [enchant.get_default_language(), QLocale.system().name()],
+                              ["en_US"], strict)
 
-        if default_locale == None:
-            default_locale = QLocale.system().name()
-        if default_locale == None:
-            default_locale = self.availableDictionaries()[0]
-
-        return default_locale
-
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         return not self._dict.check(word)
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         return self._dict.suggest(word)
 
     def isCustomWord(self, word):
@@ -370,22 +491,17 @@ class PySpellcheckerDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not PySpellcheckerDictionary.isInstalled():
             return None
 
-        default_locale = QLocale.system().name()
-        if default_locale:
-            default_locale = default_locale[0:2]
-        if default_locale == None:
-            default_locale = "en"
+        return pickDictionary(PySpellcheckerDictionary.availableDictionaries(),
+                              [QLocale.system().name()], ["en"], strict)
 
-        return default_locale
-
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         return len(self._dict.unknown([word])) > 0
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         candidates = self._dict.candidates(word)
         if candidates and word in candidates:
             candidates.remove(word)
@@ -422,6 +538,11 @@ class SymSpellDictionary(BasicDictionary):
                         for key in data:
                             self._dict.create_dictionary_entry(key, data[key])
                     self._dict.save_pickle(cachePath, False)
+
+        # Without any dictionary data, every word would be misspelled.
+        if self._dict.word_count == 0:
+            raise ValueError("No symspellpy dictionary data for '{}'".format(self.name))
+
         for word in self._customDict:
             self._dict.create_dictionary_entry(word, self.CUSTOM_COUNT)
 
@@ -458,13 +579,14 @@ class SymSpellDictionary(BasicDictionary):
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not SymSpellDictionary.isInstalled():
             return None
 
-        return PySpellcheckerDictionary.getDefaultDictionary()
+        return pickDictionary(SymSpellDictionary.availableDictionaries(),
+                              [QLocale.system().name()], ["en"], strict)
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         suggestions = self._dict.lookup(word.lower(), symspellpy.Verbosity.TOP)
         if len(suggestions) > 0 and suggestions[0].distance == 0:
             return False
@@ -475,7 +597,7 @@ class SymSpellDictionary(BasicDictionary):
             return False
         return True
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         upper = word.isupper()
         upper1 = word[0].isupper()
         suggestions = self._dict.lookup_compound(word, 2)
@@ -499,19 +621,29 @@ class SymSpellDictionary(BasicDictionary):
     def removeWord(self, word):
         BasicDictionary.removeWord(self, word)
         # Since 6.3.8
-        self._dict.delete_dictionary_entry(word)
+        self._dict.delete_dictionary_entry(word.lower())
+
+def get_languagetool_match_attribute(match, *names):
+    # language_tool_python >= 3.0 uses snake_case names for the attributes of
+    # a match (error_length), older releases use camelCase ones (errorLength).
+    for name in names:
+        try:
+            return getattr(match, name)
+        except AttributeError:
+            pass
+    raise AttributeError(names[0])
 
 def get_languagetool_match_errorLength(match):
     if use_language_check:
         return match.errorlength
     else:
-        return match.error_length
+        return get_languagetool_match_attribute(match, "error_length", "errorLength")
 
 def get_languagetool_match_ruleIssueType(match):
     if use_language_check:
         return match.locqualityissuetype
     else:
-        return match.rule_issue_type
+        return get_languagetool_match_attribute(match, "rule_issue_type", "ruleIssueType")
 
 def get_languagetool_match_message(match):
     if use_language_check:
@@ -520,6 +652,10 @@ def get_languagetool_match_message(match):
         return match.message
 
 class LanguageToolCache:
+
+    # Whether the last check failed: a server that died would otherwise log a
+    # warning for every paragraph.
+    _failing = False
 
     def __init__(self, tool, text):
         self._length = len(text)
@@ -531,17 +667,29 @@ class LanguageToolCache:
     def _buildMatches(self, tool, text):
         matches = []
 
-        for match in tool.check(text):
-            start = match.offset
-            end = start + get_languagetool_match_errorLength(match)
+        # This runs while highlighting, where an exception would terminate
+        # the application. If the server fails (or its API changed), only
+        # skip the check of this text.
+        try:
+            for match in tool.check(text):
+                start = match.offset
+                end = start + get_languagetool_match_errorLength(match)
 
-            basic_match = BasicMatch(start, end)
-            basic_match.locqualityissuetype = get_languagetool_match_ruleIssueType(match)
-            basic_match.replacements = match.replacements
-            basic_match.msg = get_languagetool_match_message(match)
+                basic_match = BasicMatch(start, end)
+                basic_match.locqualityissuetype = get_languagetool_match_ruleIssueType(match)
+                basic_match.replacements = match.replacements
+                basic_match.msg = get_languagetool_match_message(match)
 
-            matches.append(basic_match)
+                matches.append(basic_match)
+        except Exception as e:
+            if LanguageToolCache._failing:
+                LOGGER.debug("LanguageTool check failed: %s", e)
+            else:
+                LOGGER.warning("LanguageTool check failed: %s", e)
+                LanguageToolCache._failing = True
+            return []
 
+        LanguageToolCache._failing = False
         return matches
 
     def update(self, tool, text):
@@ -563,6 +711,8 @@ def get_languagetool_locale_language():
 class LanguageToolDictionary(BasicDictionary):
 
     _tool = None
+    _toolFailed = False
+    _javaInstalled = None
 
     def __init__(self, name):
         BasicDictionary.__init__(self, name)
@@ -575,11 +725,16 @@ class LanguageToolDictionary(BasicDictionary):
 
     @staticmethod
     def getTool():
-        if LanguageToolDictionary._tool == None:
+        # Creating the tool starts a LanguageTool server in Java (after
+        # downloading LanguageTool the first time), so only try it once.
+        if LanguageToolDictionary._tool is None and not LanguageToolDictionary._toolFailed:
             try:
-                LanguageToolDictionary._tool = languagetool.LanguageTool()
-            except:
-                return None
+                # The language of this tool does not matter, but the language of
+                # the system locale might not be supported by LanguageTool.
+                LanguageToolDictionary._tool = languagetool.LanguageTool("en-US")
+            except Exception as e:
+                LOGGER.warning("Could not start LanguageTool: %s", e)
+                LanguageToolDictionary._toolFailed = True
 
         return LanguageToolDictionary._tool
 
@@ -596,42 +751,43 @@ class LanguageToolDictionary(BasicDictionary):
 
     @staticmethod
     def isInstalled():
-        if (languagetool != None) and (LanguageToolDictionary.getTool() != None):
+        if languagetool is None or LanguageToolDictionary._toolFailed:
+            return False
 
-            # This check, if Java is installed, is necessary to
-            # make sure LanguageTool can be run without problems.
-            #
-            return (os.system('java -version') == 0)
+        # LanguageTool needs Java. Does not start LanguageTool, which is slow
+        # (see isStarted).
+        if LanguageToolDictionary._javaInstalled is None:
+            LanguageToolDictionary._javaInstalled = shutil.which("java") is not None
 
-        return False
+        return LanguageToolDictionary._javaInstalled
+
+    @staticmethod
+    def isStarted():
+        return LanguageToolDictionary._tool is not None
+
+    @staticmethod
+    def start():
+        LanguageToolDictionary.getTool()
 
     @staticmethod
     def availableDictionaries():
         if LanguageToolDictionary.isInstalled():
             tool = LanguageToolDictionary.getTool()
-            languages = list(get_languagetool_languages(tool))
-            languages.sort()
-            return languages
+            if tool:
+                languages = list(get_languagetool_languages(tool))
+                languages.sort()
+                return languages
 
         return []
 
     @staticmethod
-    def getDefaultDictionary():
+    def getDefaultDictionary(strict=False):
         if not LanguageToolDictionary.isInstalled():
             return None
 
-        default_locale = get_languagetool_locale_language()
-        tool = LanguageToolDictionary.getTool()
-
-        if default_locale and not default_locale in get_languagetool_languages(tool):
-            default_locale = None
-
-        if default_locale == None:
-            default_locale = QLocale.system().name()
-        if default_locale == None:
-            default_locale = self.availableDictionaries()[0]
-
-        return default_locale
+        return pickDictionary(LanguageToolDictionary.availableDictionaries(),
+                              [get_languagetool_locale_language(), QLocale.system().name()],
+                              ["en-US"], strict)
 
     def checkText(self, text):
         matches = []
@@ -658,7 +814,7 @@ class LanguageToolDictionary(BasicDictionary):
 
         return matches
 
-    def isMisspelled(self, word):
+    def _isMisspelled(self, word):
         if self.isCustomWord(word):
             return False
 
@@ -668,7 +824,7 @@ class LanguageToolDictionary(BasicDictionary):
 
         return False
 
-    def getSuggestions(self, word):
+    def _getSuggestions(self, word):
         suggestions = []
 
         for match in self.checkText(word):
