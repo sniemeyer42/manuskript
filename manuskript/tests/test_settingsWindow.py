@@ -5,7 +5,7 @@
 
 from manuskript import functions as F
 
-def test_general(MWSampleProject):
+def test_general(MWSampleProject, monkeypatch):
     MW = MWSampleProject
 
     # Loading from mainWindow
@@ -41,10 +41,20 @@ def test_general(MWSampleProject):
     if qS.value("applicationTranslation"):
         assert (SW.cmbTranslation.currentData()
                 == qS.value("applicationTranslation"))
+    from PyQt5.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information",
+                        lambda *args, **kwargs: QMessageBox.Ok)
+    oldTranslation = qS.value("applicationTranslation")
     for name in SW.translations:
+        # Choose the language as the user would
         SW.cmbTranslation.setCurrentText(name)
-        if qS.value("applicationTranslation"):
-            assert qS.value("applicationTranslation") == SW.translations[name]
+        SW.cmbTranslation.activated.emit(SW.cmbTranslation.currentIndex())
+        assert qS.value("applicationTranslation") == SW.translations[name]
+    # Do not change the language of the next test runs
+    if oldTranslation is None:
+        qS.remove("applicationTranslation")
+    else:
+        qS.setValue("applicationTranslation", oldTranslation)
 
     def switchCheckBoxAndAssert(chk, settings):
         """
@@ -161,4 +171,174 @@ def test_general(MWSampleProject):
     item = SW.lstThemes.item(count)
     SW.lstThemes.setCurrentItem(item)
     SW.removeTheme()
+    assert SW.lstThemes.count() == count
+
+
+def test_translationList(MWSampleProject):
+    """All shipped translations can be chosen in the settings."""
+    import glob
+    import os
+    from manuskript.settingsWindow import settingsWindow
+    SW = settingsWindow(MWSampleProject)
+
+    shipped = sorted(os.path.basename(f) for f in
+                     glob.glob(F.appPath(os.path.join("i18n", "manuskript_*.qm"))))
+    assert shipped
+    names = list(SW.translations)
+    assert names[0] == "English"
+    assert SW.translations["English"] == ""
+    assert sorted(SW.translations.values()) == [""] + shipped
+    assert SW.cmbTranslation.count() == len(shipped) + 1
+    assert all(names)
+
+    # Languages are named in their own language. The names come from the
+    # CLDR data of the Qt build, so only check how the labels are made.
+    from PyQt5.QtCore import QLocale
+    for name, translation in SW.translations.items():
+        locale = F.translationLocale(translation)
+        if translation and locale.language() != QLocale.C:
+            assert name.casefold().startswith(
+                locale.nativeLanguageName().casefold()), (name, translation)
+    zh = F.translationLocale("manuskript_zh_HANT.qm")
+    assert zh.script() == QLocale.TraditionalChineseScript
+
+
+def test_translationChoice(MWSampleProject, monkeypatch):
+    """
+    Without a stored language, the settings show the language detected at
+    startup, and choosing English stores it (#1220).
+    """
+    from PyQt5.QtWidgets import qApp, QMessageBox
+    from PyQt5.QtCore import QSettings
+    from manuskript.settingsWindow import settingsWindow
+
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information",
+                        lambda *args, **kwargs: messages.append(args))
+    qS = QSettings(qApp.organizationName(), qApp.applicationName())
+    oldTranslation = qS.value("applicationTranslation")
+    oldActive = qApp.property("manuskriptTranslation")
+    try:
+        qS.remove("applicationTranslation")
+        qApp.setProperty("manuskriptTranslation", "manuskript_it.qm")
+        SW = settingsWindow(MWSampleProject)
+        assert SW.cmbTranslation.currentData() == "manuskript_it.qm"
+
+        # Choosing English is stored, with a notice to restart
+        SW.cmbTranslation.setCurrentIndex(SW.cmbTranslation.findData(""))
+        SW.cmbTranslation.activated.emit(SW.cmbTranslation.currentIndex())
+        assert qS.contains("applicationTranslation")
+        assert qS.value("applicationTranslation") == ""
+        assert len(messages) == 1
+
+        # Choosing the active language needs no restart
+        index = SW.cmbTranslation.findData("manuskript_it.qm")
+        SW.cmbTranslation.setCurrentIndex(index)
+        SW.cmbTranslation.activated.emit(index)
+        assert qS.value("applicationTranslation") == "manuskript_it.qm"
+        assert len(messages) == 1
+
+        # The notice is shown once per settings window, not for each language
+        # passed with the arrow keys (each one is 'activated' and stored)
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtTest import QTest
+        for i in range(3):
+            QTest.keyClick(SW.cmbTranslation, Qt.Key_Down)
+        assert SW.cmbTranslation.currentIndex() == index + 3
+        assert qS.value("applicationTranslation") == SW.cmbTranslation.currentData()
+        assert len(messages) == 1
+
+        # A stored language takes precedence
+        qS.setValue("applicationTranslation", "manuskript_de.qm")
+        SW = settingsWindow(MWSampleProject)
+        assert SW.cmbTranslation.currentData() == "manuskript_de.qm"
+        SW.cmbTranslation.activated.emit(SW.cmbTranslation.findData(""))
+        assert len(messages) == 2
+    finally:
+        qApp.setProperty("manuskriptTranslation", oldActive)
+        if oldTranslation is None:
+            qS.remove("applicationTranslation")
+        else:
+            qS.setValue("applicationTranslation", oldTranslation)
+
+
+def test_autoSaveTimer(MWSampleProject, monkeypatch):
+    """Turning autosave on or off in the settings applies immediately."""
+    import time
+    from PyQt5.QtCore import Qt
+    from manuskript import settings as S
+    from manuskript.settingsWindow import settingsWindow
+    MW = MWSampleProject
+    SW = settingsWindow(MW)
+    for name in ["autoSave", "autoSaveDelay", "saveOnQuit"]:
+        monkeypatch.setattr(S, name, getattr(S, name))  # restored afterwards
+
+    SW.chkAutoSave.setChecked(False)
+    assert S.autoSave is False
+    assert not MW.saveTimer.isActive()
+
+    SW.chkAutoSave.setChecked(True)
+    assert S.autoSave is True
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.interval() == S.autoSaveDelay * 60 * 1000
+
+    # Other options do not restart the countdown, a new delay does
+    MW.saveTimer.setTimerType(Qt.PreciseTimer)
+    MW.saveTimer.start()
+    time.sleep(0.3)
+    SW.chkSaveOnQuit.setChecked(not SW.chkSaveOnQuit.isChecked())
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.remainingTime() < MW.saveTimer.interval() - 200
+    SW.txtAutoSave.setText(str(S.autoSaveDelay + 1))
+    SW.txtAutoSave.textEdited.emit(SW.txtAutoSave.text())
+    assert MW.saveTimer.isActive()
+    assert MW.saveTimer.interval() == S.autoSaveDelay * 60 * 1000
+    assert MW.saveTimer.remainingTime() > MW.saveTimer.interval() - 200
+
+    SW.chkAutoSave.setChecked(False)
+    assert not MW.saveTimer.isActive()
+
+    # Pending "save after changes" is cancelled when that option is disabled
+    SW.chkAutoSaveNoChanges.setChecked(True)
+    MW.startTimerNoChanges()
+    assert MW.saveTimerNoChanges.isActive()
+    SW.chkAutoSaveNoChanges.setChecked(False)
+    assert not MW.saveTimerNoChanges.isActive()
+
+
+def test_themeEditorConnections(MWSampleProject, monkeypatch):
+    """Editing a theme several times does not duplicate the signal handlers."""
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QColor
+    from PyQt5.QtWidgets import QColorDialog
+    from manuskript.settingsWindow import settingsWindow
+    SW = settingsWindow(MWSampleProject)
+
+    calls = []
+    monkeypatch.setattr(QColorDialog, "getColor",
+                        lambda *args, **kwargs: calls.append(1) or QColor("#123456"))
+
+    count = SW.lstThemes.count()
+    SW.newTheme()
+    assert SW.lstThemes.count() == count + 1
+    item = SW.lstThemes.item(count)
+    try:
+        receivers = None
+        for i in range(3):
+            SW.lstThemes.setCurrentItem(item)
+            SW.editTheme()
+            spinReceivers = SW.spnThemeTextWidth.receivers(
+                SW.spnThemeTextWidth.valueChanged)
+            if receivers is None:
+                receivers = spinReceivers
+            assert spinReceivers == receivers
+
+            calls.clear()
+            SW.btnThemWindowBackgroundColor.click()
+            assert len(calls) == 1
+            assert SW._themeData["Background/Color"] == "#123456"
+            SW.cancelEdit()
+    finally:
+        SW.lstThemes.setCurrentItem(item)
+        SW.removeTheme()
     assert SW.lstThemes.count() == count

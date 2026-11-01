@@ -849,7 +849,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     self.lstCharacters.setCurrentItem(None)
                     self.lstCharacters.clearSelection()
                 else:
-                    if self.lstCharacters.currentCharacterID() != event.entry[1]:
+                    # pushHistory() calls this synchronously: never collapse a
+                    # (multi-)selection that already contains the entry (#1449)
+                    if event.entry[1] not in self.lstCharacters.currentCharacterIDs():
                         char = self.lstCharacters.getItemByID(event.entry[1])
                         if char != None:
                             self.lstCharacters.clearSelection()
@@ -963,6 +965,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.toggleSpellcheck(settings.spellcheck)
         self.updateMenuDict()
         self.setDictionary()
+        settings.applyTooltipStyle()
 
         iconSize = settings.viewSettings["Tree"]["iconSize"]
         self.treeRedacOutline.setIconSize(QSize(iconSize, iconSize))

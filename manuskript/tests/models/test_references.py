@@ -114,3 +114,38 @@ def test_references(MWSampleProject):
     for ref in refs:
         assert Ref.open(ref) == True
     assert Ref.open(Ref.EmptyRef.format("Z", 14, "")) == False
+
+
+def test_referenceTitleWithBraces(MWSampleProject):
+    """
+    References inserted for items whose title contains braces must not be
+    cut at the first '}' (#1127).
+    """
+    import re
+    from PyQt5.QtCore import Qt
+    from manuskript.models import references as Ref
+    from manuskript.ui.editors.completer import completer
+    from manuskript.enums import Outline
+
+    MW = MWSampleProject
+    item = MW.mdlOutline.rootItem.child(0)
+    item.setData(Outline.title, "3. {Peter} at Joppa")
+    MW.cheatSheet.populate()
+
+    def refsFor(listWidget):
+        return [listWidget.item(r).data(Qt.UserRole)
+                for r in range(listWidget.count())
+                if listWidget.item(r).data(Qt.UserRole)]
+
+    MW.cheatSheet.txtFilter.setText("Joppa")
+    cmp = completer()
+    cmp.text.setText("Joppa")
+
+    for refs in [refsFor(MW.cheatSheet.list), refsFor(cmp.list)]:
+        assert len(refs) == 1
+        ref = refs[0]
+        assert re.fullmatch(Ref.RegExNonCapturing, ref)
+        # The whole reference is matched in a text
+        text = "See {} for details.".format(ref)
+        assert re.findall(Ref.RegExNonCapturing, text) == [ref]
+        assert re.match(Ref.RegEx, ref).group(2) == item.ID()

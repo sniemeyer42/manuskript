@@ -41,6 +41,14 @@ PlotHighlightColor = QColor(mixColors(QColor(Qt.red).name(), S.window, .3))
 WorldHighlightColor = QColor(mixColors(QColor(Qt.green).name(), S.window, .3))
 
 
+def titledReference(letter, ID, title):
+    """Returns a reference of type `letter` to the item `ID`, labelled with
+    `title`. Braces in the title would end the reference early, so they are
+    replaced by parentheses (#1127)."""
+    title = title.replace("{", "(").replace("}", ")")
+    return EmptyRef.format(letter, ID, title)
+
+
 def plotReference(ID, searchable=False):
     """Takes the ID of a plot and returns a reference for that plot.
     @searchable: returns a stripped version that allows simple text search."""

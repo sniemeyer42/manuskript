@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
+import glob
 import os
 import shutil
 from collections import OrderedDict
 
-from PyQt5.QtCore import QSize, QSettings, QRegExp, QTranslator, QObject
+from PyQt5.QtCore import QSize, QSettings, QRegExp, QTranslator, QObject, QLocale
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIntValidator, QIcon, QFont, QColor, QPixmap, QStandardItem, QPainter
 from PyQt5.QtGui import QStyleHints
@@ -15,7 +16,7 @@ from PyQt5.QtWidgets import qApp, QFileDialog
 from manuskript import settings
 from manuskript.enums import Outline
 from manuskript.functions import allPaths, iconColor, writablePath, appPath, findWidgetsOfClass
-from manuskript.functions import mainWindow, findBackground, themeIcon
+from manuskript.functions import mainWindow, findBackground, themeIcon, translationLocale
 from manuskript.ui.editors.tabSplitter import tabSplitter
 from manuskript.ui.editors.themes import createThemePreview
 from manuskript.ui.editors.themes import getThemeName
@@ -25,6 +26,26 @@ from manuskript.ui.views.outlineView import outlineView
 from manuskript.ui.views.textEditView import textEditView
 from manuskript.ui.welcome import welcome
 from manuskript.ui import style as S
+
+
+def translationName(translation):
+    """Returns the name of the language of a translation file such as
+    'manuskript_pt_BR.qm', written in that language."""
+    code = translation[len("manuskript_"):-len(".qm")]
+    locale = translationLocale(translation)
+    name = locale.nativeLanguageName()
+    if locale.language() == QLocale.C or not name:
+        return code
+
+    code, _, variant = code.partition("@")
+    parts = code.split("_")
+    # Add the country when the language name alone is ambiguous (pt / pt_BR)
+    if (len(parts) > 1 and len(parts[-1]) == 2
+            and name == QLocale(parts[0]).nativeLanguageName()):
+        name += " ({})".format(locale.nativeCountryName())
+    if variant:
+        name += " ({})".format(variant)
+    return name[:1].upper() + name[1:]
 
 
 class settingsWindow(QWidget, Ui_Settings):
@@ -66,53 +87,52 @@ class settingsWindow(QWidget, Ui_Settings):
         # General
         self.cmbStyle.addItems(list(QStyleFactory.keys()))
 
+        # With custom tooltip colours (an application style sheet), the
+        # active style has no name: use the one remembered when it was set.
+        style = qApp.style().objectName() or qApp.property("manuskriptStyle")
         try:
-            self.cmbStyle.setCurrentIndex(lowerKeys.index(qApp.style().objectName()))
+            self.cmbStyle.setCurrentIndex(lowerKeys.index(style))
         except ValueError:
             self.cmbStyle.setCurrentIndex(0)
 
-        self.cmbStyle.currentIndexChanged[str].connect(self.setStyle)
+        # 'activated' is also emitted when the current entry is chosen again:
+        # with --style, the entry shown is the session's style, not the
+        # saved one.
+        self.cmbStyle.activated.connect(
+            lambda i: self.setStyle(self.cmbStyle.itemText(i)))
 
         self.cmbTranslation.clear()
         tr = OrderedDict()
         tr["English"] = ""
-        tr["Arabic (Saudi Arabia)"] = "manuskript_ar_SA.qm"
-        tr["German"] = "manuskript_de.qm"
-        tr["English (Great Britain)"] = "manuskript_en_GB.qm"
-        tr["Spanish"] = "manuskript_es.qm"
-        tr["Persian"] = "manuskript_fa.qm"
-        tr["French"] = "manuskript_fr.qm"
-        tr["Hungarian"] = "manuskript_hu.qm"
-        tr["Indonesian"] = "manuskript_id.qm"
-        tr["Italian"] = "manuskript_it.qm"
-        tr["Japanese"] = "manuskript_ja.qm"
-        tr["Korean"] = "manuskript_ko.qm"
-        tr["Norwegian Bokmål"] = "manuskript_nb_NO.qm"
-        tr["Dutch"] = "manuskript_nl.qm"
-        tr["Polish"] = "manuskript_pl.qm"
-        tr["Portuguese (Brazil)"] = "manuskript_pt_BR.qm"
-        tr["Portuguese (Portugal)"] = "manuskript_pt_PT.qm"
-        tr["Romanian"] = "manuskript_ro.qm"
-        tr["Russian"] = "manuskript_ru.qm"
-        tr["Svenska"] = "manuskript_sv.qm"
-        tr["Turkish"] = "manuskript_tr.qm"
-        tr["Ukrainian"] = "manuskript_uk.qm"
-        tr["Chinese (Simplified)"] = "manuskript_zh_CN.qm"
-        tr["Chinese (Traditional)"] = "manuskript_zh_HANT.qm"
+        # All translations shipped in i18n/, named in their own language
+        names = {}
+        for path in sorted(glob.glob(appPath(os.path.join("i18n", "manuskript_*.qm")))):
+            translation = os.path.basename(path)
+            name = translationName(translation)
+            if name in names or name in tr:
+                name = "{} [{}]".format(name, translation)
+            names[name] = translation
+        for name in sorted(names, key=str.casefold):
+            tr[name] = names[name]
         self.translations = tr
 
         for name in tr:
             self.cmbTranslation.addItem(name, tr[name])
 
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
-        if (sttgs.contains("applicationTranslation")
-            and sttgs.value("applicationTranslation") in tr.values()):
+        if sttgs.contains("applicationTranslation"):
+            translation = sttgs.value("applicationTranslation")
+        else:
+            # No language chosen yet: show the one detected at startup (#1220)
+            translation = qApp.property("manuskriptTranslation")
+        if translation in tr.values():
             # Sets the correct translation
             self.cmbTranslation.setCurrentText(
-                [i for i in tr
-                 if tr[i] == sttgs.value("applicationTranslation")][0])
+                [i for i in tr if tr[i] == translation][0])
 
-        self.cmbTranslation.currentIndexChanged.connect(self.setTranslation)
+        # 'activated' is also emitted when the current entry is chosen again
+        self._restartNoticeShown = False
+        self.cmbTranslation.activated.connect(self.setTranslation)
 
         f = qApp.font()
         self.spnGeneralFontSize.setValue(f.pointSize())
@@ -292,6 +312,7 @@ class settingsWindow(QWidget, Ui_Settings):
 
         # Fullscreen
         self._editingTheme = None
+        self._themeEditorConnected = False
         self.btnThemeEditOK.setIcon(qApp.style().standardIcon(QStyle.SP_DialogApplyButton))
         self.btnThemeEditOK.clicked.connect(self.saveTheme)
         self.btnThemeEditCancel.setIcon(qApp.style().standardIcon(QStyle.SP_DialogCancelButton))
@@ -344,15 +365,24 @@ class settingsWindow(QWidget, Ui_Settings):
         # Save style to Qt Settings
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
         sttgs.setValue("applicationStyle", style)
-        qApp.setStyle(style)
+        newStyle = qApp.setStyle(style)
+        if newStyle:
+            qApp.setProperty("manuskriptStyle", newStyle.objectName())
 
     def setTranslation(self, index):
-        path = self.cmbTranslation.currentData()
+        path = self.cmbTranslation.itemData(index)
         # Save settings
         sttgs = QSettings(qApp.organizationName(), qApp.applicationName())
         sttgs.setValue("applicationTranslation", path)
 
-        # QMessageBox.information(self, "Warning", "You'll have to restart manuskript.")
+        # Only once: the arrow keys and the mouse wheel 'activate' each
+        # language on the way.
+        if (path != qApp.property("manuskriptTranslation")
+                and not self._restartNoticeShown):
+            self._restartNoticeShown = True
+            QMessageBox.information(
+                self, self.tr("Language changed"),
+                self.tr("Restart Manuskript to use the new language."))
 
     def setAppFontSize(self, val):
         """
@@ -386,8 +416,21 @@ class settingsWindow(QWidget, Ui_Settings):
         settings.saveToZip = True if self.chkSaveToZip.checkState() else False
         settings.autoSaveDelay = int(self.txtAutoSave.text())
         settings.autoSaveNoChangesDelay = int(self.txtAutoSaveNoChanges.text())
-        self.mw.saveTimer.setInterval(settings.autoSaveDelay * 60 * 1000)
-        self.mw.saveTimerNoChanges.setInterval(settings.autoSaveNoChangesDelay * 1000)
+        # Setting the interval of a running timer restarts its countdown:
+        # only do it when the delay has changed.
+        for timer, interval in [
+                (self.mw.saveTimer, settings.autoSaveDelay * 60 * 1000),
+                (self.mw.saveTimerNoChanges, settings.autoSaveNoChangesDelay * 1000)]:
+            if timer.interval() != interval:
+                timer.setInterval(interval)
+
+        # Start or stop autosaving now, not only when the project is reopened
+        if not settings.autoSave:
+            self.mw.saveTimer.stop()
+        elif not self.mw.saveTimer.isActive():
+            self.mw.saveTimer.start()
+        if not settings.autoSaveNoChanges:
+            self.mw.saveTimerNoChanges.stop()
 
     ####################################################################################################
     #                                           REVISION                                               #
@@ -822,13 +865,37 @@ class settingsWindow(QWidget, Ui_Settings):
         self._themeData = loadThemeDatas(theme)
 
         # Window Background
-        self.btnThemWindowBackgroundColor.clicked.connect(lambda: self.getThemeColor("Background/Color"))
         try:
             self.cmbThemeBackgroundImage.disconnect()
         except:
             pass
         self.populatesCmbBackgrounds(self.cmbThemeBackgroundImage)
         self.cmbThemeBackgroundImage.currentIndexChanged.connect(self.updateThemeBackground)
+
+        # Text Options
+        try:
+            self.cmbThemeFontSize.currentIndexChanged.disconnect(self.updateThemeFont)
+        except:
+            pass
+        self.populatesFontSize()
+        self.cmbThemeFontSize.currentIndexChanged.connect(self.updateThemeFont)
+
+        # loadTheme() runs each time a theme is edited: connect the other
+        # widgets only once, their handlers use the current self._themeData.
+        if not self._themeEditorConnected:
+            self._themeEditorConnected = True
+            self.connectThemeEditor()
+
+        # Update UI
+        self.updateUIFromTheme()
+
+        # Generate preview
+        self._loadingTheme = False
+        self.updatePreview()
+
+    def connectThemeEditor(self):
+        # Window Background
+        self.btnThemWindowBackgroundColor.clicked.connect(lambda: self.getThemeColor("Background/Color"))
         self.cmbThemBackgroundType.currentIndexChanged.connect(lambda i: self.setSetting("Background/Type", i))
 
         # Text Background
@@ -843,30 +910,16 @@ class settingsWindow(QWidget, Ui_Settings):
         # Text Options
         self.btnThemeTextColor.clicked.connect(lambda: self.getThemeColor("Text/Color"))
         self.cmbThemeFont.currentFontChanged.connect(self.updateThemeFont)
-        try:
-            self.cmbThemeFontSize.currentIndexChanged.disconnect(self.updateThemeFont)
-        except:
-            pass
-        self.populatesFontSize()
-        self.cmbThemeFontSize.currentIndexChanged.connect(self.updateThemeFont)
         self.btnThemeMisspelledColor.clicked.connect(lambda: self.getThemeColor("Text/Misspelled"))
 
         # Paragraph Options
         self.chkThemeIndent.stateChanged.connect(lambda v: self.setSetting("Spacings/IndentFirstLine", v != 0))
         self.cmbThemeAlignment.currentIndexChanged.connect(lambda i: self.setSetting("Spacings/Alignment", i))
         self.cmbThemeLineSpacing.currentIndexChanged.connect(self.updateLineSpacing)
-        self.cmbThemeLineSpacing.currentIndexChanged.connect(self.updateLineSpacing)
         self.spnThemeLineSpacing.valueChanged.connect(lambda v: self.setSetting("Spacings/LineSpacing", v))
         self.spnThemeParaAbove.valueChanged.connect(lambda v: self.setSetting("Spacings/ParagraphAbove", v))
         self.spnThemeParaBelow.valueChanged.connect(lambda v: self.setSetting("Spacings/ParagraphBelow", v))
         self.spnThemeTabWidth.valueChanged.connect(lambda v: self.setSetting("Spacings/TabWidth", v))
-
-        # Update UI
-        self.updateUIFromTheme()
-
-        # Generate preview
-        self._loadingTheme = False
-        self.updatePreview()
 
     def setSetting(self, key, val):
         self._themeData[key] = val
@@ -1068,8 +1121,4 @@ class settingsWindow(QWidget, Ui_Settings):
 
     def updateTooltipStyle(self):
         # Apply the new tooltip style immediately
-        if settings.tooltipStyle["useSystemDefaultsForTooltips"]:
-            # Clear any custom tooltip styling to use system defaults
-            qApp.setStyleSheet("")
-        else:
-            qApp.setStyleSheet(f"QToolTip {{ color: {settings.tooltipStyle['textColor']}; background-color: {settings.tooltipStyle['backgroundColor']}; border: 1px solid {settings.tooltipStyle['borderColor']}; }}")
+        settings.applyTooltipStyle()

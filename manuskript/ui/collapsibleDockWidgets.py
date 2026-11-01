@@ -117,8 +117,10 @@ class collapsibleDockWidgets(QToolBar):
         """
         state = []
         for btn, act, w, grp in self.otherWidgets:
+            # Identify the widget by its object name rather than by the
+            # translated button text, which changes with the UI language.
             state.append(
-                (grp, btn.text(), btn.isChecked())
+                (grp, w.objectName() or btn.text(), btn.isChecked())
             )
         return state
 
@@ -126,9 +128,11 @@ class collapsibleDockWidgets(QToolBar):
         """Restores the state of the custom widgets."""
         for group, title, status in state:
             for btn, act, widget, grp in self.otherWidgets:
+                # States saved by older versions use the button text.
                 # Strip '&' from both title and btn.text() to improve matching because
                 #   title contains "&" shortcut character whereas btn.text() does not.
-                if group == grp and title.replace('&', '') == btn.text().replace('&', ''):
+                if group == grp and (title == widget.objectName() or
+                                     title.replace('&', '') == btn.text().replace('&', '')):
                     btn.setChecked(status)
                     btn.defaultAction().setChecked(status)
                     widget.setVisible(status)

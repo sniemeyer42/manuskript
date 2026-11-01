@@ -62,7 +62,7 @@ class search(QWidget, Ui_search):
         else:
             self.result.setCurrentRow(0)
 
-        if 0 < self.result.currentRow() < self.result.count():
+        if 0 <= self.result.currentRow() < self.result.count():
             self.openItem(self.result.currentItem())
 
     def previousSearchResult(self):
@@ -71,7 +71,7 @@ class search(QWidget, Ui_search):
         else:
             self.result.setCurrentRow(self.result.count() - 1)
 
-        if 0 < self.result.currentRow() < self.result.count():
+        if 0 <= self.result.currentRow() < self.result.count():
             self.openItem(self.result.currentItem())
 
     def onSearchMenuChange(self):
@@ -111,8 +111,10 @@ class search(QWidget, Ui_search):
             searchText = re.escape(searchText)
 
         if self.searchMenu.matchWords() is True:
-            # Source: https://stackoverflow.com/a/15863102
-            searchText = r'\b' + searchText + r'\b'
+            # Group the pattern so that an alternation applies as a whole, and
+            # use lookarounds instead of \b so that terms starting or ending
+            # with punctuation (e.g. "Mr.") are found too.
+            searchText = r'(?<!\w)(?:' + searchText + r')(?!\w)'
 
         return re.compile(searchText, flags)
 

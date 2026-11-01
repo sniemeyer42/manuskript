@@ -133,10 +133,13 @@ def initDefaultValues():
 
 def applyTooltipStyle():
     """
-    Apply tooltip styling to the application if system defaults are disabled.
+    Apply tooltip styling to the application if system defaults are disabled,
+    otherwise remove any custom tooltip styling.
     """
-    if not tooltipStyle["useSystemDefaultsForTooltips"]:
-        from PyQt5.QtWidgets import qApp
+    from PyQt5.QtWidgets import qApp
+    if tooltipStyle["useSystemDefaultsForTooltips"]:
+        qApp.setStyleSheet("")
+    else:
         qApp.setStyleSheet(f"QToolTip {{ color: {tooltipStyle['textColor']}; background-color: {tooltipStyle['backgroundColor']}; border: 1px solid {tooltipStyle['borderColor']}; }}")
 
 def save(filename=None, protocol=None):

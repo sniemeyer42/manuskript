@@ -7,11 +7,11 @@ import sys
 import signal
 
 import manuskript.logging
-from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt, QTimer
+from PyQt5.QtCore import QLocale, QTranslator, QSettings, Qt, QTimer, QLibraryInfo
 from PyQt5.QtGui import QIcon, QColor, QPalette
 from PyQt5.QtWidgets import QApplication, qApp, QStyleFactory
 
-from manuskript.functions import appPath, writablePath, resetTranslation
+from manuskript.functions import appPath, writablePath, resetTranslation, translationLocale
 from manuskript.version import getVersion
 
 try:
@@ -21,6 +21,59 @@ except (AttributeError, RuntimeError):
 
 import logging
 LOGGER = logging.getLogger(__name__)
+
+def translationFileName(languageCode):
+    """Returns the name of the translation file to try for a UI language code
+    such as 'de-DE' (see QLocale.uiLanguages())."""
+    lc = languageCode.replace('-', '_')
+    # Traditional Chinese is shipped as manuskript_zh_HANT.qm, a name that
+    # QTranslator's fallback never builds from zh_TW, zh_HK or zh_Hant_TW.
+    if lc.startswith("zh") and QLocale(lc).script() == QLocale.TraditionalChineseScript:
+        lc = "zh_HANT"
+    return "manuskript_{}.qm".format(lc)
+
+def loadQtTranslation(app, translation, catalogue):
+    """Installs Qt's own translation (standard buttons, file and color dialogs,
+    context menus...) matching the manuskript translation file `translation`,
+    loaded in the QTranslator `catalogue`.
+    Returns the translator, or None if there is none."""
+    # Builtin English, or a catalogue without any translated message (the UI
+    # is in English then): keep Qt's strings in English as well.
+    if not translation or catalogue.isEmpty():
+        return None
+    locale = translationLocale(translation)
+    if locale.language() == QLocale.C:
+        return None
+
+    translator = QTranslator(app)
+    for directory in [QLibraryInfo.location(QLibraryInfo.TranslationsPath),
+                      appPath("i18n")]:
+        if translator.load(locale, "qtbase", "_", directory):
+            # Installing a translator makes Qt take the layout direction from
+            # the translation of QT_LAYOUT_DIRECTION, which is right-to-left
+            # in qtbase_ar/fa/he.qm. Keep the direction that the manuskript
+            # catalogue gave: it is the one that translates Manuskript's UI.
+            direction = app.layoutDirection()
+            app.installTranslator(translator)
+            app.setLayoutDirection(direction)
+            LOGGER.info("Loaded Qt translation for {} from {}".format(locale.name(), directory))
+            return translator
+
+    LOGGER.info("No Qt translation found for {}.".format(locale.name()))
+    return None
+
+def selectStyle(arguments, settings):
+    """Returns the name of the Qt style to use, or None for the default.
+    A style given with --style is used for this session instead of the saved
+    one, e.g. when the saved style crashes (#467).
+    QT_STYLE_OVERRIDE is not used: many desktops set it for all applications,
+    and the style chosen in the settings would never be kept."""
+    style = getattr(arguments, "style", None)
+    if style:
+        return style
+    if settings.contains("applicationStyle"):
+        return settings.value("applicationStyle")
+    return None
 
 def prepare(arguments, tests=False):
     # Qt WebEngine demands this attribute be set _before_ we create our QApplication object.
@@ -50,11 +103,14 @@ def prepare(arguments, tests=False):
 
     app.setStyle("Fusion")
 
-    # Load style from QSettings
+    # Load style from the command line or QSettings
     settings = QSettings(app.organizationName(), app.applicationName())
-    if settings.contains("applicationStyle"):
-        style = settings.value("applicationStyle")
+    style = selectStyle(arguments, settings)
+    if style:
         app.setStyle(style)
+    # Remember the style's name: with custom tooltip colours (an application
+    # style sheet), qApp.style() is a wrapper without a name.
+    app.setProperty("manuskriptStyle", app.style().objectName())
 
     # Translation process
     appTranslator = QTranslator(app)
@@ -65,6 +121,11 @@ def prepare(arguments, tests=False):
         """Tries to load and activate a given translation for use."""
         if appTranslator.load(translation, appPath("i18n")):
             app.installTranslator(appTranslator)
+            # Remember the file that was actually loaded (see note below),
+            # so that the settings can show the active language.
+            if hasattr(appTranslator, "filePath"):  # Qt >= 5.15
+                translation = os.path.basename(appTranslator.filePath()) or translation
+            app.setProperty("manuskriptTranslation", translation)
             LOGGER.info("Loaded translation: {}".format(translation))
             # Note: QTranslator.load() does some fancy heuristics where it simplifies
             #   the given locale until it is 'close enough' if the given filename does
@@ -76,8 +137,9 @@ def prepare(arguments, tests=False):
             #      * i18n/manuskript_en
             #      * i18n/manuskript.qm
             #      * i18n/manuskript
-            #   We have no way to determining what it eventually went with, so mind your
-            #   filenames when you observe strange behaviour with the loaded translations.
+            #   Before Qt 5.15 we have no way to determining what it eventually went with,
+            #   so mind your filenames when you observe strange behaviour with the loaded
+            #   translations.
             return True
         else:
             LOGGER.info("No translation found or loaded. ({})".format(translation))
@@ -87,6 +149,7 @@ def prepare(arguments, tests=False):
         """Loads the most suitable translation based on the available information."""
         using_builtin_translation = True
         resetTranslation()
+        app.setProperty("manuskriptTranslation", "")
 
         if (translation != ""):  # empty string == 'no translation, use builtin'
             if isinstance(translation, str):
@@ -99,7 +162,7 @@ def prepare(arguments, tests=False):
                     lc = language_code.replace('-', '_')
                     if lc.lower() == 'en_US'.lower():
                         break
-                    if tryLoadTranslation("manuskript_{}.qm".format(lc), source):
+                    if tryLoadTranslation(translationFileName(language_code), source):
                         using_builtin_translation = False
                         break
 
@@ -120,6 +183,7 @@ def prepare(arguments, tests=False):
 
     LOGGER.info("Preferred translation: {} (based on {})".format(("builtin" if translation == "" else translation), source))
     activateTranslation(translation, source)
+    loadQtTranslation(app, app.property("manuskriptTranslation"), appTranslator)
 
     def respectSystemDarkThemeSetting():
         """Adjusts the Qt theme to match the OS 'dark theme' setting configured by the user."""
@@ -165,9 +229,8 @@ def prepare(arguments, tests=False):
 
     respectSystemDarkThemeSetting()
 
-    # Apply configurable tooltip styling
-    from manuskript import settings as manuskript_settings
-    manuskript_settings.applyTooltipStyle()
+    # Note: the configurable tooltip styling is stored in the project settings,
+    # it is applied when a project is loaded (see MainWindow.loadProject).
 
     QIcon.setThemeSearchPaths(QIcon.themeSearchPaths() + [appPath("icons")])
     QIcon.setThemeName("NumixMsk")
@@ -300,6 +363,8 @@ def process_commandline(argv):
                         action="store_true")
     parser.add_argument("-v", "--verbose", action="count", default=1, help="lower the threshold for messages logged to the terminal")
     parser.add_argument("-L", "--logfile", default=None, help="override the default log file location")
+    parser.add_argument("--style", "-style", default=None,
+                        help="use this Qt style (e.g. Fusion) instead of the one chosen in the settings")
     parser.add_argument("filename", nargs="?", metavar="FILENAME", help="the manuskript project (.msk) to open",
                         type=lambda x: is_valid_project(parser, x))
 
