@@ -191,8 +191,7 @@ def test_translationAutoDetection(languageCode, expected):
     translator = QTranslator()
     assert translator.load(main.translationFileName(languageCode),
                            appPath("i18n"))
-    if hasattr(translator, "filePath"):  # Qt >= 5.15
-        assert translator.filePath().endswith(expected)
+    assert translator.filePath().endswith(expected)
 
 
 def catalogue(translation):

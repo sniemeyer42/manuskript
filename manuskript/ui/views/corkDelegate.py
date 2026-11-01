@@ -95,11 +95,7 @@ class corkDelegate(QStyledItemDelegate):
             edt = QPlainTextEdit(parent)
             edt.setFocusPolicy(Qt.StrongFocus)
             edt.setFrameShape(QFrame.NoFrame)
-            try:
-                # QPlainTextEdit.setPlaceholderText was introduced in Qt 5.3
-                edt.setPlaceholderText(self.tr("Full summary"))
-            except AttributeError:
-                pass
+            edt.setPlaceholderText(self.tr("Full summary"))
             edt.setStyleSheet("background: {}; color: black;".format(bgColor))
             return edt
 

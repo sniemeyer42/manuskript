@@ -123,8 +123,7 @@ def prepare(arguments, tests=False):
             app.installTranslator(appTranslator)
             # Remember the file that was actually loaded (see note below),
             # so that the settings can show the active language.
-            if hasattr(appTranslator, "filePath"):  # Qt >= 5.15
-                translation = os.path.basename(appTranslator.filePath()) or translation
+            translation = os.path.basename(appTranslator.filePath()) or translation
             app.setProperty("manuskriptTranslation", translation)
             LOGGER.info("Loaded translation: {}".format(translation))
             # Note: QTranslator.load() does some fancy heuristics where it simplifies
@@ -137,9 +136,7 @@ def prepare(arguments, tests=False):
             #      * i18n/manuskript_en
             #      * i18n/manuskript.qm
             #      * i18n/manuskript
-            #   Before Qt 5.15 we have no way to determining what it eventually went with,
-            #   so mind your filenames when you observe strange behaviour with the loaded
-            #   translations.
+            #   QTranslator.filePath() tells which file it eventually went with.
             return True
         else:
             LOGGER.info("No translation found or loaded. ({})".format(translation))

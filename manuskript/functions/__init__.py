@@ -289,11 +289,7 @@ def translationLocale(translation):
 
 
 def writablePath(suffix=None):
-    if hasattr(QStandardPaths, "AppLocalDataLocation"):
-        p = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
-    else:
-        # Qt < 5.4
-        p = QStandardPaths.writableLocation(QStandardPaths.DataLocation)
+    p = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
     if suffix:
         p = os.path.join(p, suffix)
     if not os.path.exists(p):
@@ -459,8 +455,7 @@ def getSaveFileNameWithSuffix(parent, caption, directory, filter, options=None, 
     if defaultSuffix:
         dialog.setDefaultSuffix(defaultSuffix)
     dialog.setFileMode(QFileDialog.AnyFile)
-    if hasattr(dialog, 'setSupportedSchemes'): # Pre-Qt5.6 lacks this.
-        dialog.setSupportedSchemes(("file",))
+    dialog.setSupportedSchemes(("file",))
     dialog.setAcceptMode(QFileDialog.AcceptSave)
     if selectedFilter:
         dialog.selectNameFilter(selectedFilter)

@@ -198,15 +198,10 @@ def handle_unraisable_exception(unraisable):
 # been put in its own function as opposed to letting a direct import handle it.
 def logFutureExceptions():
     """Log all the interesting exceptions that may happen in the future."""
+    import threading
     sys.excepthook = handle_uncaught_exception
-    try:
-        import threading # threading module was optional pre-3.7
-        if hasattr(threading, "excepthook"):  # Python 3.8+
-            threading.excepthook = handle_uncaught_thread_exception
-    except:
-        pass
-    if hasattr(sys, "unraisablehook"):  # Python 3.8+
-        sys.unraisablehook = handle_unraisable_exception
+    threading.excepthook = handle_uncaught_thread_exception
+    sys.unraisablehook = handle_unraisable_exception
 
 
 # Qt has its own logging facility that we would like to integrate into our own.

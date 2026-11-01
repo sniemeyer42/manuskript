@@ -6,6 +6,8 @@
 import subprocess
 import sys
 
+import pytest
+
 from manuskript.functions import appPath
 
 
@@ -17,15 +19,16 @@ def runWithVersion(version):
                           universal_newlines=True, timeout=60)
 
 
-def test_tooOldPython():
+@pytest.mark.parametrize("version", [(3, 5, 2, "final", 0), (3, 9, 18, "final", 0)])
+def test_tooOldPython(version):
     """An old Python gets a clear message instead of a SyntaxError."""
-    result = runWithVersion((3, 5, 2, "final", 0))
+    result = runWithVersion(version)
     assert result.returncode == 1
-    assert "requires Python 3.6" in result.stderr
+    assert "requires Python 3.10" in result.stderr
     assert "imported" not in result.stdout
 
 
 def test_supportedPython():
-    result = runWithVersion((3, 6, 0, "final", 0))
+    result = runWithVersion((3, 10, 0, "final", 0))
     assert result.returncode == 0
     assert "imported" in result.stdout
