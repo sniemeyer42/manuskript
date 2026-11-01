@@ -64,7 +64,7 @@ echo_do eval "rsync -a --exclude=.git \
     --exclude=dist \
     --exclude=snap \
     --exclude=package \
-    --exclude={.codeclimate.yml,.gitignore,.travis.yml} \
+    --exclude=.gitignore \
     $ScriptPath/../  $Dest/$AppName-$AppVersion/usr/share/manuskript"
 # Note:  Files manuskript and manuskript.desktop are same as in Debian
 echo_do eval "cp $ScriptPath/create_deb/manuskript $Dest/$AppName-$AppVersion/usr/bin/manuskript"

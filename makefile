@@ -18,9 +18,6 @@ lineprof:
 profile:
 	python3 -m cProfile -s 'cumtime' bin/manuskript | more
 
-compile:
-	cd manuskript && python3 setup.py build_ext --inplace
-
 callgraph:
 	cd manuskript; pycallgraph myoutput -- main.py
 
