@@ -9,9 +9,10 @@ name: Build for Windows
 
 # Controls when the action will run. 
 on:
-  # Triggers the workflow on push or pull request events but only for the develop branch
+  # Triggers the workflow on pushes to develop and to the personal branches,
+  # and on pull requests for develop
   push:
-    branches: [ develop ]
+    branches: [ develop, "personal/**" ]
   pull_request:
     branches: [ develop ]
 
@@ -20,18 +21,18 @@ on:
 
 jobs:
   windows_build:
-    name: Building for Windows ${{ matrix.python_version }} on ${{ matrix.os }}
+    name: Building for Windows ${{ matrix.python-version }} on ${{ matrix.os }}
     # The type of runner that the job will run on
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: [3.9]
+        python-version: ["3.12"]
         os: [windows-latest]
     steps:
     # We use the version from this commit and not just the current branch.  This is for R&D builds too.
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     # These should be moved to a pyproject.toml file down the line.

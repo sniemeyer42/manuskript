@@ -1,13 +1,14 @@
-# This workflow is used to run pytest and confirm 
-# that Linux builds meet the pytest requirements for the project.
+# This workflow runs the test suite on Linux (with xvfb) and on Windows
+# (offscreen), with the oldest and a recent supported Python version.
 
-name: Pytest Run (Linux)
+name: Pytest
 
-# Controls when the action will run. 
+# Controls when the action will run.
 on:
-  # Triggers the workflow on push or pull request events but only for the develop branch
+  # Triggers the workflow on pushes to develop and to the personal branches,
+  # and on pull requests for develop
   push:
-    branches: [ develop ]
+    branches: [ develop, "personal/**" ]
   pull_request:
     branches: [ develop ]
 
@@ -16,29 +17,70 @@ on:
 
 jobs:
   test:
-    name: Running pytest ${{ matrix.python_version }} and ${{ matrix.os }}
-    # The type of runner that the job will run on
+    name: Running pytest ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # A test waiting on a dialog would otherwise block the job for hours
+    timeout-minutes: 30
     strategy:
+      # A failure on one platform does not cancel the other jobs
+      fail-fast: false
       matrix:
         # https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs
-        python-version: [3.9]
-        os: [ubuntu-24.04]
+        include:
+          - os: ubuntu-24.04
+            python-version: "3.10"
+          - os: ubuntu-24.04
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.12"
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
+
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
+
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get -qq update
+        sudo apt-get -qq install python3-pip python3-dev build-essential qtbase5-dev qt5-qmake libxml2-dev libxslt1-dev mesa-utils libgl1 libgl1-mesa-dev libxcb-xinerama0-dev xvfb pandoc
+
+    - name: Install pandoc (Windows)
+      if: runner.os == 'Windows'
+      # The tests that need pandoc are skipped without it
+      continue-on-error: true
+      run: |
+        choco install pandoc --no-progress -y
+        # Reads PATH again from the registry, and passes the folder of
+        # pandoc on to the next steps
+        Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
+        refreshenv
+        Split-Path (Get-Command pandoc).Source | Add-Content -Path $env:GITHUB_PATH
+
+    - name: Install Python dependencies
+      shell: bash
       run: |
         python -m pip install --upgrade pip
-        pip install pyqt5==5.15.7 lxml pytest pytest-faulthandler
-        sudo apt-get -qq update
-        sudo apt-get -qq install python3-pip python3-dev build-essential qtbase5-dev qt5-qmake libxml2-dev libxslt1-dev mesa-utils libgl1 libgl1-mesa-dev libxcb-xinerama0-dev
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Test with pytest
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          # PyQt5-Qt5 5.15.2 is the last release with Windows wheels
+          sed -e 's/^PyQt5-Qt5==.*/PyQt5-Qt5==5.15.2/' requirements.txt > "$RUNNER_TEMP/requirements.txt"
+        else
+          cp requirements.txt "$RUNNER_TEMP/requirements.txt"
+        fi
+        python -m pip install -r "$RUNNER_TEMP/requirements.txt"
+        python -m pip install pytest pytest-faulthandler pyspellchecker symspellpy markdown
+
+    - name: Test with pytest (Linux)
+      if: runner.os == 'Linux'
       run: |
-        xvfb-run -s '-screen 0 640x480x24 +extension GLX' pytest -vs
+        xvfb-run -s '-screen 0 640x480x24 +extension GLX' python -m pytest -v -ra manuskript/tests
+
+    - name: Test with pytest (Windows)
+      if: runner.os == 'Windows'
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        python -m pytest -v -ra manuskript/tests

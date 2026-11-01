@@ -1,10 +1,11 @@
-# This workflow is used to run pytest and produce Linux builds (PyInstaller standalone, Debian deb, and Fedora rpm) as artifacts.
+# This workflow is used to produce Linux builds (PyInstaller standalone, Debian deb, and Fedora rpm) as artifacts.
+# The tests run in pytest.yml.
 
-name: Build and Test for Linux
+name: Build for Linux
 
 on:
   push:
-    branches: [ develop ]
+    branches: [ develop, "personal/**" ]
   pull_request:
     branches: [ develop ]
 
@@ -13,7 +14,7 @@ on:
 
 jobs:
   linux_build:
-    name: Building for Linux 3.9 on ubuntu-22.04
+    name: Building for Linux 3.12 on ubuntu-22.04
     runs-on: ubuntu-22.04
 
     steps:
@@ -22,10 +23,10 @@ jobs:
       with:
         fetch-depth: 0 # Fetch all history so git rev-parse works for versioning
 
-    - name: Set up Python 3.9
-      uses: actions/setup-python@v4
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
+        python-version: '3.12'
 
     - name: Install system dependencies
       run: |
@@ -51,12 +52,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip setuptools wheel
         pip install pyinstaller PyQt5 lxml pyenchant pytest pytest-faulthandler markdown symspellpy pyspellchecker
-
-    - name: Run Pytest
-      env:
-        QT_QPA_PLATFORM: offscreen
-      run: |
-        pytest -vs -o cache_dir=/tmp/pytest_cache --ignore=rpmbuild --ignore=dist
 
     - name: Build standalone Linux binary
       run: |

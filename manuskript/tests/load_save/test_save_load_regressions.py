@@ -5,6 +5,7 @@
 
 import os
 import shutil
+import sys
 
 import pytest
 
@@ -311,6 +312,7 @@ def test_failed_write_keeps_previous_file(sampleProject, monkeypatch):
         assert f.read().endswith("Text written today")
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX file modes")
 def test_save_keeps_symlinks_and_modes(sampleProject, tmp_path):
     """A file that is a symbolic link is written through the link, and the mode of the
     files that are replaced is kept."""
@@ -444,6 +446,7 @@ def test_zip_save_is_atomic(sampleProject, tmp_path, monkeypatch):
         assert any(b"New text" in zf.read(f) for f in zf.namelist())
 
 
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX file modes")
 def test_zip_save_keeps_symlink_and_mode(sampleProject, tmp_path, monkeypatch):
     """A single-file project opened through a symbolic link (e.g. to a synced folder) is
     saved to the file the link points to, with its mode."""
