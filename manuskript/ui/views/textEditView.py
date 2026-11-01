@@ -115,6 +115,8 @@ class textEditView(QTextEdit):
             self.highlighter.setDefaultBlockFormat(bf)
 
     def setCurrentModelIndex(self, index):
+        # Don't lose what was just typed in the item we are leaving
+        self.submitPendingChanges()
         self._indexes = None
         if index.isValid():
             self.setEnabled(True)
@@ -153,6 +155,7 @@ class textEditView(QTextEdit):
         return [self.currentIndex()]
 
     def setCurrentModelIndexes(self, indexes):
+        self.submitPendingChanges()
         self._index = None
         self._indexes = []
 
@@ -171,7 +174,15 @@ class textEditView(QTextEdit):
     def setupEditorForIndex(self, index):
         # Setting highlighter
         if self._highlighting:
-            self.highlighter = self._highlighterClass(self)
+            # A highlighter stays attached to the document until it is
+            # removed, so reuse it instead of stacking a new one each time.
+            if self.highlighter is not None and \
+                    type(self.highlighter) is not self._highlighterClass:
+                self.highlighter.setDocument(None)
+                self.highlighter.deleteLater()
+                self.highlighter = None
+            if self.highlighter is None:
+                self.highlighter = self._highlighterClass(self)
             self.highlighter.setDefaultBlockFormat(self._defaultBlockFormat)
             self.highlighter.updateColorScheme()
 
@@ -296,7 +307,11 @@ class textEditView(QTextEdit):
         """QTextDocument::toPlainText() replaces NBSP with spaces, which we don't want.
         QTextDocument::toRawText() replaces nothing, but that leaves fancy paragraph and line separators that users would likely complain about.
         This reimplements toPlainText(), except without the NBSP destruction."""
-        return self.document().toRawText().translate(PLAIN_TRANSLATION_TABLE)
+        text = self.document().toRawText()
+        # Much faster than str.translate(), which does a dict lookup per char.
+        for char, replacement in PLAIN_TRANSLATION_TABLE.items():
+            text = text.replace(chr(char), replacement)
+        return text
     toPlainText = toIdealText
 
     def updateText(self):
@@ -358,10 +373,20 @@ class textEditView(QTextEdit):
                     LOGGER.debug("Submitting many indexes")
                     self._model.setData(i, text)
 
+    def submitPendingChanges(self):
+        """
+        Submits the text right away if a (delayed) submit is pending, e.g.
+        before the edited index changes or the project is saved.
+        """
+        if self.updateTimer and self.updateTimer.isActive():
+            self.submit()
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
-            text = QApplication.clipboard().text()
-            self.insertPlainText(text)
+            # insertPlainText() would also insert into read-only editors
+            if not self.isReadOnly():
+                text = QApplication.clipboard().text()
+                self.insertPlainText(text)
         else:
             QTextEdit.keyPressEvent(self, event)
 

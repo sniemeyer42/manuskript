@@ -15,6 +15,7 @@ class lineEditView(QLineEdit):
         self._index = None
         self._placeholderText = None
         self._updating = QMutex()
+        self.textEdited.connect(self.submit)
 
     def setModel(self, model):
         self._model = model
@@ -33,7 +34,6 @@ class lineEditView(QLineEdit):
             # self.item = index.internalPointer()
             if self._placeholderText != None:
                 self.setPlaceholderText(self._placeholderText)
-            self.textEdited.connect(self.submit)
             self.updateText()
 
     def setCurrentModelIndexes(self, indexes):
@@ -46,7 +46,6 @@ class lineEditView(QLineEdit):
                     i = i.sibling(i.row(), self._column)
                 self._indexes.append(i)
 
-        self.textEdited.connect(self.submit)
         self.updateText()
 
     def submit(self):

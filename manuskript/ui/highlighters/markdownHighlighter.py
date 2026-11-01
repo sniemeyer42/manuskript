@@ -42,6 +42,7 @@ class MarkdownHighlighter(BasicHighlighter):
         #default values
         self.editor = editor
         self.tokenizer = MarkdownTokenizer()
+        self._blockCount = None  # When a block was last highlighted
 
         self.spellCheckEnabled = False
         #self.typingPaused = True
@@ -175,7 +176,40 @@ class MarkdownHighlighter(BasicHighlighter):
             if block.next().isValid():
                 nextState = block.next().userState()
 
-            self.tokenizer.tokenize(text, lastState, previousState, nextState)
+            # If paragraphs were inserted or removed, the previous block may
+            # have been followed by another block when it was highlighted.
+            blockCount = self.document().blockCount()
+            newPrevious = blockCount != self._blockCount
+            self._blockCount = blockCount
+
+            self.tokenizer.tokenize(text, lastState, previousState, nextState,
+                                    block.previous().text(), newPrevious)
+
+            # If our line break depends on the state of the next block, but
+            # that one was not highlighted yet (e.g. the text is being opened),
+            # guess its state now. (Highlighting this block again once it is
+            # known costs a layout pass, for each line break in the text.)
+            if nextState == MS.MarkdownStateUnknown and \
+               block.next().isValid() and \
+               self.tokenizer.getState() in \
+                   MarkdownTokenizer.LINE_BREAK_STATES and \
+               self.tokenizer.lineBreakRegex.exactMatch(text):
+                nextTokenizer = MarkdownTokenizer()
+                nextTokenizer.clear()
+                nextTokenizer.tokenize(block.next().text(),
+                                       MS.MarkdownStateUnknown,
+                                       self.tokenizer.getState(),
+                                       block.next().next().userState(), text)
+                nextState = nextTokenizer.getState()
+                # Our state as the previous block knows it (or guessed it)
+                knownState = lastState
+                if knownState == MS.MarkdownStateUnknown:
+                    knownState = self.tokenizer.getState()
+                self.tokenizer.clear()
+                self.tokenizer.tokenize(text, knownState, previousState,
+                                        nextState, block.previous().text(),
+                                        newPrevious)
+
             self.setCurrentBlockState(self.tokenizer.getState())
 
             self.inBlockquote = self.tokenizer.getState() == MS.MarkdownStateBlockquote

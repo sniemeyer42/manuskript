@@ -7,7 +7,7 @@ from PyQt5.QtCore import QRegExp, Qt, QTimer, QRect, QPoint
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtWidgets import qApp, QToolTip
 
-from manuskript.ui.views.textEditView import textEditView
+from manuskript.ui.views.textEditView import textEditView, PLAIN_TRANSLATION_TABLE
 from manuskript.ui.highlighters import MarkdownHighlighter
 from manuskript import settings
 from manuskript.ui.highlighters.markdownEnums import MarkdownState as MS
@@ -20,7 +20,9 @@ LOGGER = logging.getLogger(__name__)
 class MDEditView(textEditView):
 
     blockquoteRegex = QRegExp("^ {0,3}(>\\s*)+")
-    listRegex = QRegExp(r"^(\s*)([+*-]|([0-9a-z])+([.\)]))(\s+)")
+    listRegex = QRegExp(r"^(\s*)([+*-]|([0-9]+|[a-z])([.\)]))(\s+)")
+    # A list item without text, with any marker the highlighter accepts
+    emptyListItemRegex = QRegExp(r"^\s*([0-9a-z]+[.\)]|[+*-]+)\s+$")
     inlineLinkRegex = QRegExp("\\[([^\n]+)\\]\\(([^\n]+)\\)")
     imageRegex = QRegExp("!\\[([^\n]*)\\]\\(([^\n]+)\\)")
     automaticLinkRegex = QRegExp("(<([a-zA-Z]+\\:[^\n]+)>)|(<([^\n]+@[^\n]+)>)")
@@ -47,6 +49,12 @@ class MDEditView(textEditView):
 
         # Clickable things
         self.clickRects = []
+        # Computing them is costly, so it is done once text changes,
+        # scrolling and resizing have settled (see getClickRects).
+        self._clickRectsTimer = QTimer(self)
+        self._clickRectsTimer.setSingleShot(True)
+        self._clickRectsTimer.setInterval(100)
+        self._clickRectsTimer.timeout.connect(self.computeClickRects)
         self.textChanged.connect(self.getClickRects)
         self.document().documentLayoutChanged.connect(self.getClickRects)
         self.setMouseTracking(True)
@@ -104,6 +112,18 @@ class MDEditView(textEditView):
             s = cursor.block().userState()
 
             if s in [MS.MarkdownStateNumberedList,
+                     MS.MarkdownStateBulletPointList] and \
+               self.listRegex.indexIn(text) == -1:
+                # Items with a marker that can't be incremented (the
+                # highlighter also takes e.g. "ii." or "1a." for one), and
+                # indented lines continuing an item: end the list if the line
+                # is only a marker, else keep the indentation.
+                if self.emptyListItemRegex.exactMatch(text):
+                    endList = True
+                else:
+                    autoInsertText = self.getPriorIndentation()
+
+            elif s in [MS.MarkdownStateNumberedList,
                      MS.MarkdownStateBulletPointList]:
                 self.listRegex.indexIn(text)
                 g = self.listRegex.capturedTexts()
@@ -187,14 +207,24 @@ class MDEditView(textEditView):
 
     def cursorPositionHasChanged(self):
         self.centerCursor()
+        lastPosition = self._lastCursorPosition
+        self._lastCursorPosition = self.textCursor().position()
+        if not self.highlighter:
+            return
         # Focus mode
-        if self.highlighter and settings.textEditor["focusMode"]:
-            if self._lastCursorPosition:
-                block = self.document().findBlock(self._lastCursorPosition)
+        if settings.textEditor["focusMode"]:
+            if lastPosition is not None:
+                block = self.document().findBlock(lastPosition)
                 self.highlighter.rehighlightBlock(block)
-            self._lastCursorPosition = self.textCursor().position()
             block = self.document().findBlock(self._lastCursorPosition)
             self.highlighter.rehighlightBlock(block)
+        # The word at the cursor is not spellchecked while the cursor is at the
+        # end of the paragraph (see BasicHighlighter.highlightBlockAfter), so
+        # check the paragraph again once the cursor left it.
+        elif self.spellcheck and self._dict and lastPosition is not None:
+            block = self.document().findBlock(lastPosition)
+            if block != self.textCursor().block():
+                self.highlighter.rehighlightBlock(block)
 
     def centerCursor(self, force=False):
         cursor = self.cursorRect()
@@ -343,36 +373,74 @@ class MDEditView(textEditView):
 
     def clearedFormat(self, text):
         # FIXME: clear also block formats
-        for reg, rep, flags in [
-            (r"\*\*(.*?)\*\*", "\\1", None), # bold
-            ("__(.*?)__", "\\1", None), # bold
-            (r"\*(.*?)\*", "\\1", None), # emphasis
-            ("_(.*?)_", "\\1", None), # emphasis
-            ("`(.*?)`", "\\1", None), # verbatim
-            ("~~(.*?)~~", "\\1", None), # strike
-            (r"\^(.*?)\^", "\\1", None), # superscript
-            ("~(.*?)~", "\\1", None), # subscript
-            (r"<!--\s*(.*?)\s*-->", "\\1", re.S), # comments
+        # Selected text separates paragraphs with U+2029
+        text = text.replace("\u2029", "\n")
+        # Comments can span several lines
+        text = re.sub(r"<!--\s*(.*?)\s*-->", "\\1", text, flags=re.S)
+
+        quoteRegex = r"[ \t]*(>[ \t]*)+"
+        ruleRegex = r"[ \t]*([-*_])([ \t]*\1){2,}[ \t]*$"
+        bulletRegex = r"[ \t]*[-+*][ \t]+(?=\S)"
+        numberRegex = r"[ \t]*([0-9]+|[a-z])[.)][ \t]+(?=\S)"
+        lines = text.split("\n")
+        numbered = [re.match(numberRegex, re.sub("^" + quoteRegex, "", l))
+                    is not None for l in lines]
+
+        def isText(i):
+            """Is the i-th line a paragraph of text?"""
+            return i >= 0 and lines[i].strip() and \
+                not re.match(ruleRegex, lines[i]) and \
+                not re.match(r"[ \t]*(#|>|```|~~~|"
+                             r"([-+*]|[0-9a-z]+[.)])([ \t]|$))", lines[i])
+
+        cleared = []
+        for i, line in enumerate(lines):
+            # Below a line of text, "===" or "---" makes it a Setext heading
+            # ("===" at the start of the selection too, it is nothing else).
+            if re.match(r"(={3,}|-{3,})[ \t]*$", line) and \
+               (isText(i - 1) or (i == 0 and line[0] == "=")):
+                continue
+            # Horizontal rules (e.g. scene breaks) are kept as they are
+            if re.match(ruleRegex, line):
+                cleared.append(line.strip())
+                continue
+            if re.match(r"[ \t]*`+[ \t]*$", line):
+                continue # Code block fence
+
+            for reg, rep in [
+                (r"\*\*(.*?)\*\*", "\\1"), # bold
+                ("__(.*?)__", "\\1"), # bold
+                (r"\*(.*?)\*", "\\1"), # emphasis
+                ("_(.*?)_", "\\1"), # emphasis
+                ("`(.*?)`", "\\1"), # verbatim
+                ("~~(.*?)~~", "\\1"), # strike
+                (r"\^(.*?)\^", "\\1"), # superscript
+                ("~(.*?)~", "\\1"), # subscript
+                ]:
+                line = re.sub(reg, rep, line)
 
             # LINES OR BLOCKS
-            (r"^#*\s*(.+?)\s*", "\\1", re.M), # ATX
-            (r"^[=-]*$", "", re.M), # Setext
-            (r"^`*$", "", re.M), # Code block fenced
-            (r"^\s*[-+*]\s*(.*?)\s*$", "\\1", re.M), # Bullet List
-            (r"^\s*[0-9a-z](\.|\))\s*(.*?)\s*$", "\\2", re.M), # Bullet List
-            (r"\s*[>\s]*(.*?)\s*$", "\\1", re.M), # Code block and blockquote
-
-            ]:
-            text = re.sub(reg, rep, text, flags if flags else 0)
-        return text
+            line = re.sub("^" + quoteRegex, "", line) # blockquote
+            line = re.sub(r"^[ \t]*#+[ \t]*(.*?)([ \t]+#+)?[ \t]*$", "\\1",
+                          line) # ATX
+            line = re.sub("^" + bulletRegex, "", line) # bullet list
+            # Numbered list. Numbers of several digits only in a list (from
+            # item 10 on): a paragraph can start with a year, e.g. "1984. ".
+            match = re.match(numberRegex, line)
+            if match and (len(match.group(1)) == 1 or
+                          (i > 0 and numbered[i - 1]) or
+                          (i + 1 < len(lines) and numbered[i + 1])):
+                line = line[match.end():]
+            cleared.append(line.strip()) # also indented code block
+        return "\n".join(cleared)
 
     def clearedFormatForStats(self, text):
         # Remove stuff that musn't be counted
         # FIXME: clear also block formats
         for reg, rep, flags in [
-            ("<!--.*-->", "", re.S), # comments
+            ("<!--.*?-->", "", re.S), # comments
             ]:
-            text = re.sub(reg, rep, text, flags if flags else 0)
+            text = re.sub(reg, rep, text, flags=flags)
         return text
 
     def titleSetext(self, level):
@@ -463,12 +531,37 @@ class MDEditView(textEditView):
 
     def getClickRects(self):
         """
-        Parses the whole texte to catch clickable things: links and images.
-        Stores the result so that it can be used elsewhere.
+        Schedules an update of the clickable things (see computeClickRects).
+        Called on every text change, highlighter pass, scroll step and resize,
+        so the actual computation is debounced.
+        """
+        # Can be called by textEditView.__init__, before the timer exists.
+        timer = getattr(self, "_clickRectsTimer", None)
+        if timer is not None:
+            timer.start()
+
+    def computeClickRects(self):
+        """
+        Parses the visible part of the text to catch clickable things: links
+        and images. Stores the result so that it can be used elsewhere.
         """
         cursor = self.textCursor()
         refs = []
-        text = self.toPlainText()
+        # Only what is shown in the viewport can be clicked, and the rects
+        # are recomputed after scrolling or resizing. Clickable things never
+        # span several paragraphs, so we parse whole visible blocks.
+        viewport = self.viewport().rect()
+        start = self.cursorForPosition(viewport.topLeft()).block().position()
+        last = self.cursorForPosition(viewport.bottomRight()).block()
+        # Like toPlainText(), for the visible blocks only. (Slicing it with
+        # document positions would be off after characters outside the BMP,
+        # e.g. emojis, which take two positions.)
+        cursor.setPosition(start)
+        cursor.setPosition(last.position() + last.length() - 1,
+                           QTextCursor.KeepAnchor)
+        text = cursor.selectedText()
+        for char, replacement in PLAIN_TRANSLATION_TABLE.items():
+            text = text.replace(chr(char), replacement)
         for rx in [
                 self.imageRegex,
                 self.automaticLinkRegex,
@@ -476,10 +569,10 @@ class MDEditView(textEditView):
             ]:
             pos = 0
             while rx.indexIn(text, pos) != -1:
-                cursor.setPosition(rx.pos())
+                cursor.setPosition(start + rx.pos())
                 r1 = self.cursorRect(cursor)
                 pos = rx.pos() + rx.matchedLength()
-                cursor.setPosition(pos)
+                cursor.setPosition(start + pos)
                 r2 = self.cursorRect(cursor)
                 if r1.top() == r2.top():
                     ct = ClickThing(
@@ -493,7 +586,7 @@ class MDEditView(textEditView):
                     r2.setLeft(self.viewport().geometry().left())
                     refs.append(ClickThing(r2, rx, rx.capturedTexts()))
                     # We check for middle lines
-                    cursor.setPosition(rx.pos())
+                    cursor.setPosition(start + rx.pos())
                     cursor.movePosition(cursor.Down)
                     while self.cursorRect(cursor).top() != r2.top():
                         r3 = self.cursorRect(cursor)
@@ -507,6 +600,15 @@ class MDEditView(textEditView):
 
         self.clickRects = refs
 
+    def computePendingClickRects(self):
+        """
+        Computes the clickable things right away if an update is pending,
+        e.g. when the mouse is used right after scrolling.
+        """
+        if self._clickRectsTimer.isActive():
+            self._clickRectsTimer.stop()
+            self.computeClickRects()
+
     def mouseMoveEvent(self, event):
         """
         When mouse moves, we show tooltip when appropriate.
@@ -515,6 +617,7 @@ class MDEditView(textEditView):
         textEditView.mouseMoveEvent(self, event)
         self.endTooltipMoveEvent()
 
+        self.computePendingClickRects()
         onRect = [r for r in self.clickRects if r.rect.contains(event.pos())]
 
         if not onRect:
@@ -545,6 +648,7 @@ class MDEditView(textEditView):
 
     def mouseReleaseEvent(self, event):
         textEditView.mouseReleaseEvent(self, event)
+        self.computePendingClickRects()
         onRect = [r for r in self.clickRects if r.rect.contains(event.pos())]
         if onRect and event.modifiers() & Qt.ControlModifier:
             ct = onRect[0]
