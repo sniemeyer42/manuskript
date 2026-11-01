@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, shutil
+import os, gzip, json, glob, re, shutil, unicodedata
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
@@ -225,6 +225,58 @@ APOSTROPHES = "'\u2019"
 # so'ne)
 CLITICS = {"s", "n", "m", "ne", "nen", "nem"}
 
+# Elisions, by language of the dictionary (see dictionaryLanguage): words
+# that drop their last vowel and are joined to the next word by an apostrophe
+# (French l’homme, qu’il, jusqu’à). Word lists such as the dictionaries of
+# pyspellchecker know few of these forms.
+ELISIONS = {
+    # French
+    "fr": {"c", "ç", "d", "j", "l", "m", "n", "s", "t",
+           "qu", "jusqu", "lorsqu", "puisqu", "quoiqu", "quelqu"},
+    # Italian (dell’anno, c’è, quest’anno, senz’altro). Not un, buon and
+    # nessun: they are elided only before a feminine word (un’amica, but
+    # un amico). The word lists know most of these forms, not all of them
+    # (un’estate).
+    "it": {"l", "dell", "all", "dall", "nell", "sull", "coll",
+           "c", "ch", "d", "m", "n", "s", "t", "v",
+           "quest", "quell", "bell", "sant", "tutt", "pover",
+           "anch", "com", "cos", "dov", "quand", "quant", "senz", "nient",
+           "mezz"},
+    # Catalan (l’home, d’aigua, m’agrada)
+    "ca": {"d", "l", "m", "n", "s", "t"},
+}
+
+# Words after an elision that need an accent there, by language: the word
+# without its accent (lower case), the word with it, and the elisions after
+# which only the word with the accent is right: French jusqu’à, d’où and
+# jusqu’où, not jusqu’a, d’ou and jusqu’ou; Italian c’è, dov’è and cos’è, not
+# c’e, dov’e and cos’e. Without their accent these are words too (French a
+# and ou, Italian e), which would be accepted after any elision. Not after
+# elisions where they can be right: French qu’a and lorsqu’a (ce qu’a dit
+# Pierre, lorsqu’a eu lieu la fête), d’a (d’A à Z), Italian tutt’e (tutt’e
+# due) and dell’e (the letter e).
+ELISION_ACCENTS = {
+    "fr": {"a": ("à", {"jusqu"}),
+           "ou": ("où", {"d", "jusqu"})},
+    "it": {"e": ("è", {"c", "ch", "m", "n", "s", "t", "v",
+                       "com", "cos", "dov", "quand", "quant"})},
+}
+
+def dictionaryLanguage(name):
+    """Returns the language of a dictionary name: fr for fr, fr_FR or fr-FR."""
+    return re.split(r"[-_@.]", name or "")[0].lower()
+
+# Words are only elided before a vowel or h (l’homme, but le chat)
+ELISION_FOLLOWERS = set("aeiouyhæœ")
+
+def canFollowElision(word):
+    """
+    Returns True if word starts with a vowel (with or without accents), y or
+    h, or with a digit (Italian dell’800).
+    """
+    letter = unicodedata.normalize("NFD", word[:1])[:1].lower()
+    return letter in ELISION_FOLLOWERS or letter.isdigit()
+
 # Based on http://john.nachtimwald.com/2009/08/22/qplaintextedit-with-in-line-spell-check/
 # Letters, digits and apostrophes, not preceded or followed by any of them. A
 # word at the very end of the text is not matched, so that a word is not
@@ -232,6 +284,10 @@ CLITICS = {"s", "n", "m", "ne", "nen", "nem"}
 WORDS = re.compile(r"(?<![^\W_]|['\u2019])((?:[^\W_]|['\u2019])+)(?=[^\w'\u2019]|_)")
 
 class BasicDictionary:
+    # Whether a word after an elision (l’homme) is checked apart from it,
+    # see splitElision
+    SPLIT_ELISIONS = True
+
     def __init__(self, name):
         self._lang = name
         if not self._lang:
@@ -319,9 +375,23 @@ class BasicDictionary:
     def isWordMisspelled(self, word):
         """
         Like isMisspelled, but also accepts custom words, and words that the
-        dictionary only knows with an ASCII apostrophe (isn’t) or without a
-        clitic (geht's).
+        dictionary only knows with an ASCII apostrophe (isn’t), without a
+        clitic (geht's) or without an elision (l’homme).
         """
+        if not self._isWordMisspelled(word):
+            return False
+
+        # The word after an elision is checked the same way (qu’aujourd’hui),
+        # and must have its accent (jusqu’à, not jusqu’a)
+        elision = self.splitElision(word)
+        if elision is None:
+            return True
+        prefix, rest = elision
+        return (self.missingAccent(prefix, rest) is not None
+                or self._isWordMisspelled(rest))
+
+    def _isWordMisspelled(self, word):
+        """isWordMisspelled, without looking for an elision."""
         if not self.isMisspelled(word) or self.isCustomWord(word):
             return False
 
@@ -340,6 +410,59 @@ class BasicDictionary:
                 return False
 
         return True
+
+    def splitElision(self, word):
+        """
+        Returns (elision, rest) if word starts with an elision of the language
+        of the dictionary, followed by a word that can be elided before
+        (l’homme -> l’, homme), else None.
+        """
+        if not self.SPLIT_ELISIONS:
+            return None
+
+        parts = re.split("([" + APOSTROPHES + "])", word, maxsplit=1)
+        if len(parts) == 3:
+            prefix, apostrophe, rest = parts
+            if (prefix.lower() in ELISIONS.get(dictionaryLanguage(self.name), ())
+                    and canFollowElision(rest)):
+                return prefix + apostrophe, rest
+        return None
+
+    def missingAccent(self, elision, rest):
+        """
+        Returns rest with the accent it needs after elision (see
+        ELISION_ACCENTS), if it is missing: jusqu’, a -> à. Else None.
+        """
+        accents = ELISION_ACCENTS.get(dictionaryLanguage(self.name), {})
+        accented, elisions = accents.get(rest.lower(), (None, ()))
+        if elision[:-1].lower() not in elisions:
+            return None
+        # In the case of rest: JUSQU’A -> JUSQU’À, Jusqu’a -> Jusqu’à
+        return "".join(a.upper() if r.isupper() else a
+                       for r, a in zip(rest, accented))
+
+    def getWordSuggestions(self, word):
+        """
+        Like getSuggestions, but keeps an elision: l’hommme -> l’homme.
+        """
+        elision = self.splitElision(word)
+        if elision is None:
+            return self.getSuggestions(word)
+
+        prefix, rest = elision
+        accented = self.missingAccent(prefix, rest)
+        if accented is not None:
+            return [prefix + accented]
+
+        suggestions = []
+        for s in self.getSuggestions(rest) or []:
+            # With the apostrophe that was typed: qu’aujourd’hiu ->
+            # qu’aujourd’hui, although the word list has aujourd'hui
+            if "\u2019" in word and "'" not in word:
+                s = s.replace("'", "\u2019")
+            if canFollowElision(s) and prefix + s not in suggestions:
+                suggestions.append(prefix + s)
+        return suggestions
 
     def isMisspelled(self, word):
         # A word without letters (empty or only apostrophes) is not asked:
@@ -369,7 +492,7 @@ class BasicDictionary:
             # A selection of several words is not a misspelled word
             if not any(c.isspace() for c in word) and self.isWordMisspelled(word):
                 match = BasicMatch(start, end)
-                match.replacements = self.getSuggestions(word)
+                match.replacements = self.getWordSuggestions(word)
 
                 return [ match ]
 
@@ -407,6 +530,12 @@ class BasicDictionary:
 
 
 class EnchantDictionary(BasicDictionary):
+    # A word with an elision is checked as a whole, as before. Hunspell
+    # dictionaries know the elided forms of their language, and some reject
+    # wrong ones that a check of the word after the elision would accept
+    # (Italian un’amico, l’libro; l’héros in old French dictionaries, current
+    # ones accept it).
+    SPLIT_ELISIONS = False
 
     def __init__(self, name):
         self._lang = name

@@ -788,6 +788,360 @@ def test_wordsWithoutLettersAreNotChecked(monkeypatch, cls):
     assert library.asked == []
 
 
+###############################################################################
+# Elisions
+###############################################################################
+
+class ElisionDictionary(FakeDictionary):
+    """Like the word lists of pyspellchecker and symspellpy, knows neither
+    l’homme nor l'homme."""
+    def __init__(self, lang, suggestions=None):
+        FakeDictionary.__init__(self, words=(
+            "homme", "est", "là", "ai", "il", "vienne", "à", "demain",
+            "aujourd'hui", "aime", "dit", "pas", "une", "hôtel", "état", "y",
+            "chat", "suis", "anno", "amico", "amica", "un'amica", "libro",
+            "800", "home", "aigua", "the", "dog", "quick", "a", "ou", "où",
+            "e", "è", "due"))
+        self._lang = lang
+        self._suggestions = suggestions or {}
+
+    def _getSuggestions(self, word):
+        return self._suggestions.get(word, [])
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+@pytest.mark.parametrize("lang, text, misspelled", [
+    ("fr_FR", "L'homme est là. ", []),
+    ("fr_FR", "j'ai ", []),
+    ("fr_FR", "qu'il vienne ", []),
+    ("fr_FR", "QU'IL ", []),
+    ("fr_FR", "jusqu'à demain ", []),
+    ("fr_FR", "quelqu'une ", []),
+    ("fr_FR", "l'hôtel, L'ÉTAT, j'y ", []),
+    # The rest is checked the same way
+    ("fr_FR", "qu'aujourd'hui ", []),
+    ("fr_FR", "l'hommme est là ", ["l'hommme"]),
+    ("fr_FR", "x'homme ", ["x'homme"]),
+    ("fr_FR", "l''homme ", ["l''homme"]),
+    # Not before a consonant, not even in colloquial French
+    ("fr_FR", "l'chat ", ["l'chat"]),
+    ("fr_FR", "j'suis pas là ", ["j'suis"]),
+    ("fr_FR", "j't'aime ", ["j't'aime"]),
+    ("fr_FR", "dell'anno ", ["dell'anno"]),        # Italian
+    # Not without the accent that the word needs after the elision, although
+    # it is a word without it
+    ("fr_FR", "jusqu'à, d'où, jusqu'où ", []),
+    ("fr_FR", "jusqu'a, d'ou, jusqu'ou ", ["jusqu'a", "d'ou", "jusqu'ou"]),
+    ("fr_FR", "Jusqu'a, JUSQU'A, D'OU ", ["Jusqu'a", "JUSQU'A", "D'OU"]),
+    # Where it can be right without the accent (ce qu'a dit Pierre, d'A à Z)
+    ("fr_FR", "qu'a, lorsqu'a, d'a ", []),
+    ("it_IT", "dell'anno, nell'800 ", []),
+    ("it_IT", "l'amico ", []),
+    ("it_IT", "l'libro ", ["l'libro"]),
+    # Only before a feminine word: the word list knows these
+    ("it_IT", "un'amica ", []),
+    ("it_IT", "un'amico ", ["un'amico"]),
+    ("it_IT", "dell'annno ", ["dell'annno"]),
+    ("it_IT", "c'è, dov'è, s'è ", []),
+    ("it_IT", "c'e, dov'e, s'e, quant'e ", ["c'e", "dov'e", "s'e", "quant'e"]),
+    ("it_IT", "tutt'e due, dell'e ", []),
+    ("it_IT", "jusqu'à ", ["jusqu'à"]),             # French
+    ("ca_ES", "l'home, d'aigua ", []),
+    ("ca_ES", "jusqu'à ", ["jusqu'à"]),
+    ("ca_ES", "d'ou ", []),                         # of an egg
+    # English text is not affected
+    ("en_US", "the quick dog ", []),
+    ("en_US", "the l'homme ", ["l'homme"]),
+])
+def test_checkTextElisions(lang, text, misspelled, apostrophe):
+    d = ElisionDictionary(lang)
+    text = text.replace("'", apostrophe)
+    misspelled = [w.replace("'", apostrophe) for w in misspelled]
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+
+
+@pytest.mark.parametrize("lang, elisions", [
+    ("fr", True), ("fr_FR", True), ("fr-FR", True), ("fr_CA", True),
+    ("fr-classique", True), ("FR_fr", True),
+    ("it", True), ("it_IT", True), ("it-CH", True),
+    ("ca", True), ("ca_ES", True), ("ca-ES-valencia", True),
+    ("ca_ES@valencia", True),
+    ("en", False), ("en_US", False), ("de_DE", False), ("frr", False),
+    ("fake", False), ("", False), (None, False),
+])
+def test_elisionsInTheLanguageOfTheDictionary(lang, elisions):
+    d = ElisionDictionary(lang)
+    assert d.isWordMisspelled("l’homme") != elisions
+    assert d.isWordMisspelled("l'homme") != elisions
+    assert d.isWordMisspelled("l’hommme")
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+def test_findSuggestionsForElisions(apostrophe):
+    def a(word):
+        return word.replace("’", apostrophe)
+
+    d = ElisionDictionary("fr_FR", suggestions={
+        "hommme": ["homme", "hommes", "comme"],
+        a("aujourd’hiu"): ["aujourd'hui"],
+        "hommmmmme": [],
+        a("l’hommmmmme"): ["l'homme"],
+        a("j’t’l’hommme"): ["je te l'homme"],
+        a("x’homme"): ["homme"]})
+    text = a("l’homme l’hommme qu’aujourd’hiu j’t’l’hommme l’hommmmmme x’homme ")
+
+    def suggestions(word):
+        start = text.index(a(word))
+        return d.findSuggestions(text, start, start + len(word))
+
+    # Like the underlines
+    misspelled = ["l’hommme", "qu’aujourd’hiu", "j’t’l’hommme", "l’hommmmmme",
+                  "x’homme"]
+    assert [m.getWord(text) for m in d.checkText(text)] == list(map(a, misspelled))
+    assert suggestions("l’homme") == []
+    for word in misspelled:
+        [match] = suggestions(word)
+        assert match.getWord(text) == a(word)
+
+    # The elision is kept, and only valid elisions are suggested (not l’comme)
+    [match] = suggestions("l’hommme")
+    assert match.replacements == [a("l’homme"), a("l’hommes")]
+    # With the apostrophe that was typed
+    [match] = suggestions("qu’aujourd’hiu")
+    assert match.replacements == [a("qu’aujourd’hui")]
+    # Only the word after the elision is looked up
+    [match] = suggestions("l’hommmmmme")
+    assert match.replacements == []
+    # A word that is not an elision is looked up as a whole
+    [match] = suggestions("j’t’l’hommme")
+    assert match.replacements == ["je te l'homme"]
+    [match] = suggestions("x’homme")
+    assert match.replacements == ["homme"]
+
+
+def test_suggestionsAfterAnElisionWithBothApostrophes():
+    d = ElisionDictionary("fr_FR", suggestions={
+        "aujourd'hiu": ["aujourd'hui"],
+        "aujourd’hiu": ["aujourd'hui", "aujourd’hui"]})
+
+    def replacements(word):
+        [match] = d.findSuggestions(word + " ", 0, len(word))
+        return match.replacements
+
+    # The word list's apostrophe, when both were typed
+    assert replacements("qu’aujourd'hiu") == ["qu’aujourd'hui"]
+    assert replacements("qu'aujourd’hiu") == ["qu'aujourd'hui", "qu'aujourd’hui"]
+    # Only once, if the word list has both
+    assert replacements("qu’aujourd’hiu") == ["qu’aujourd’hui"]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+@pytest.mark.parametrize("lang, word, suggestion", [
+    ("fr_FR", "jusqu'a", "jusqu'à"),
+    ("fr_FR", "Jusqu'a", "Jusqu'à"),
+    ("fr_FR", "JUSQU'A", "JUSQU'À"),
+    ("fr_FR", "d'ou", "d'où"),
+    ("fr_FR", "D'Ou", "D'Où"),
+    ("fr_FR", "jusqu'ou", "jusqu'où"),
+    ("it_IT", "c'e", "c'è"),
+    ("it_IT", "Dov'e", "Dov'è"),
+    ("it_IT", "COS'E", "COS'È"),
+])
+def test_findSuggestionsForMissingAccents(lang, word, suggestion, apostrophe):
+    # Only the accented word, not what the word list suggests for a or e
+    d = ElisionDictionary(lang, suggestions={"a": ["à", "la"], "e": ["è"]})
+    word = word.replace("'", apostrophe)
+    [match] = d.findSuggestions(word + " ", 0, len(word))
+    assert match.replacements == [suggestion.replace("'", apostrophe)]
+
+
+def test_missingAccentAfterElisionAsCustomWord():
+    d = ElisionDictionary("it_IT")
+    assert d.isWordMisspelled("c’e")
+    d.addWord("c’e")
+    assert not d.isWordMisspelled("c’e")
+    assert d.checkText("c’e ") == []
+
+
+@pytest.mark.parametrize("text, misspelled", [
+    ("D’aujourd’hui ", []),
+    # Only one elision, since the word after it starts with a vowel or h
+    ("J’t’l’ai dit ", ["J’t’l’ai"]),
+    ("j't’l'ai pas dit ", ["j't’l'ai"]),
+    ("l’l’homme ", ["l’l’homme"]),
+    # A long word does not take long, and is not checked with a recursion,
+    # which would fail while highlighting
+    ("l’" * (sys.getrecursionlimit() + 10) + "homme ",
+     ["l’" * (sys.getrecursionlimit() + 10) + "homme"]),
+])
+def test_checkTextElisionChains(text, misspelled):
+    d = ElisionDictionary("fr")
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+    for word in misspelled:
+        [match] = d.findSuggestions(text, 0, len(word))
+        assert match.getWord(text) == word
+
+
+@pytest.mark.parametrize("word, follows", [
+    ("homme", True), ("Homme", True), ("aime", True), ("à", True),
+    ("état", True), ("ÉTAT", True), ("île", True), ("œuvre", True),
+    ("Œil", True), ("y", True), ("800", True), ("chat", False),
+    ("Pierre", False), ("’homme", False), ("'", False), ("", False),
+])
+def test_canFollowElision(word, follows):
+    assert S.canFollowElision(word) == follows
+
+
+def test_contextMenuForElisions(monkeypatch):
+    from manuskript import settings
+    from manuskript.ui.views.textEditView import textEditView
+
+    fake = ElisionDictionary("fr_FR", suggestions={"hommme": ["homme"]})
+    monkeypatch.setattr(settings, "spellcheck", True)
+    monkeypatch.setattr(S.Spellchecker, "getDictionary",
+                        staticmethod(lambda name: fake))
+    editor = textEditView(spellcheck=True, highlighting=True, dict="Fake:fr_FR")
+    text = "l’homme est là, l’hommme est là jusqu’a demain\n"
+    editor.setPlainText(text)
+    editor.highlighter.rehighlight()
+    assert underlinedWords(editor) == ["l’hommme", "jusqu’a"]
+
+    def spellingSuggestions(position):
+        cursor = editor.textCursor()
+        cursor.setPosition(position)
+        editor.setTextCursor(cursor)
+        menu = editor.createStandardContextMenu()
+        return [s.text() for a in menu.actions() if a.menu()
+                for s in a.menu().actions()
+                if isinstance(s, textEditView.SpellAction)]
+
+    # Right-clicking selects the whole word
+    assert spellingSuggestions(text.index("l’homme") + 3) == []
+    assert spellingSuggestions(text.index("l’hommme") + 3) == ["l’homme"]
+    assert editor.textCursor().selectedText() == "l’hommme"
+    assert spellingSuggestions(text.index("jusqu’a") + 1) == ["jusqu’à"]
+    assert editor.textCursor().selectedText() == "jusqu’a"
+
+
+class HunspellLibrary:
+    """Like a Hunspell dictionary of enchant, knows the elided forms with an
+    ASCII apostrophe, and that they are wrong before a consonant, an h
+    aspiré (l'héros) or a masculine word (un'amico)."""
+    words = {"l'homme", "homme", "le", "héros", "chat", "l'amico", "amico",
+             "un", "un'amica", "amica", "libro"}
+
+    def check(self, word):
+        return word.lower() in self.words
+
+    def suggest(self, word):
+        return {"l'héros": ["le héros"]}.get(word.replace("’", "'"), [])
+
+    def is_added(self, word):
+        return False
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+@pytest.mark.parametrize("lang, text, misspelled", [
+    ("fr_FR", "L'homme, le héros, le chat ", []),
+    ("fr_FR", "l'héros, l'chat ", ["l'héros", "l'chat"]),
+    ("it_IT", "l'amico, un'amica ", []),
+    ("it_IT", "un'amico, l'libro ", ["un'amico", "l'libro"]),
+])
+def test_enchantChecksElisionsItself(lang, text, misspelled, apostrophe):
+    # Hunspell dictionaries know which elisions are wrong, so the word after
+    # an elision is not checked apart from it
+    d = S.EnchantDictionary.__new__(S.EnchantDictionary)
+    d._lang = lang
+    d._dict = HunspellLibrary()
+    text = text.replace("'", apostrophe)
+    misspelled = [w.replace("'", apostrophe) for w in misspelled]
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+    if lang == "fr_FR" and misspelled:
+        [match] = d.findSuggestions(text, 0, len(misspelled[0]))
+        assert match.replacements == ["le héros"]
+
+
+@pytest.mark.parametrize("library", ["pyspellchecker", "symspellpy"])
+@pytest.mark.parametrize("lang, correct, misspelled, suggestion, accents", [
+    ("fr", "L’homme qu’il a vu jusqu’à aujourd’hui n’est pas d’accord. "
+           "L'homme qu'il a vu jusqu'à aujourd'hui n'est pas d'accord. "
+           "Qu’aujourd’hui j’ai faim, quelqu’une aussi. "
+           "D’où et jusqu’où, d'où et jusqu'où ? Ce qu’a dit Pierre. ",
+     ["l’hommme", "x’homme", "l’chat", "l'hommme", "x'homme", "l'chat"],
+     "l’homme",
+     [("jusqu’a", "jusqu’à"), ("D’ou", "D’où"), ("jusqu'ou", "jusqu'où")]),
+    ("it", "M’ama l’amico e un’amica dell’anno, bell’aspetto. Quant’è? "
+           "M'ama l'amico e un'amica dell'anno, bell'aspetto. Quant'è? "
+           "Dov’è? C’è. Cos'è? Tutt’e due. ",
+     ["dell’annno", "l’amicco", "un’amico", "l’libro",
+      "dell'annno", "l'amicco", "un'amico", "l'libro"], "dell’anno",
+     [("dov’e", "dov’è"), ("C’e", "C’è"), ("cos'e", "cos'è")]),
+], ids=["fr", "it"])
+def test_elisionsWithWordLists(resources, library, lang, correct, misspelled,
+                               suggestion, accents):
+    cls = {"pyspellchecker": S.PySpellcheckerDictionary,
+           "symspellpy": S.SymSpellDictionary}[library]
+    if not cls.isInstalled():
+        pytest.skip("{} is not installed".format(library))
+    if lang not in cls.availableDictionaries():
+        pytest.skip("{} has no '{}' dictionary".format(library, lang))
+    d = cls(lang)
+
+    assert [m.getWord(correct) for m in d.checkText(correct)] == []
+    # The first word, which the dictionary does not know
+    assert d.findSuggestions(correct, 0, correct.index(" ")) == []
+
+    text = " ".join(misspelled) + " "
+    assert [m.getWord(text) for m in d.checkText(text)] == misspelled
+    for word in misspelled:
+        start = text.index(word)
+        [match] = d.findSuggestions(text, start, start + len(word))
+        assert match.getWord(text) == word
+    [match] = d.findSuggestions(text, 0, len(misspelled[0]))
+    assert suggestion in match.replacements
+
+    # A word after the elision that misses its accent there
+    text = " ".join(word for word, _ in accents) + " "
+    assert ([m.getWord(text) for m in d.checkText(text)] ==
+            [word for word, _ in accents])
+    for word, accented in accents:
+        start = text.index(word)
+        [match] = d.findSuggestions(text, start, start + len(word))
+        assert match.replacements == [accented]
+
+
+@pytest.mark.parametrize("lang, correct, elisions", [
+    ("fr_FR", "L’homme qu’il a vu jusqu’à aujourd’hui n’est pas d’accord. "
+              "L'homme qu'il a vu jusqu'à aujourd'hui n'est pas d'accord. ",
+     ["l’héros", "l’chat", "d’maison", "j’suis", "jusqu’a", "d’ou"]),
+    ("it_IT", "Ama l’amico e un’amica dell’anno. "
+              "Ama l'amico e un'amica dell'anno. ",
+     ["un’amico", "l’libro", "dov’e", "c’e"]),
+], ids=["fr_FR", "it_IT"])
+def test_elisionsWithEnchant(resources, lang, correct, elisions):
+    # A word with an elision is checked as a whole, as the dictionary checks
+    # it (with ’ read as '). Which of these words it rejects depends on the
+    # dictionary: old French Hunspell dictionaries reject l’héros and l’chat,
+    # current ones accept them.
+    if S.enchant is None:
+        pytest.skip("pyenchant is not installed")
+    if not S.enchant.dict_exists(lang):
+        pytest.skip("enchant has no '{}' dictionary".format(lang))
+    d = S.EnchantDictionary(lang)
+
+    assert [m.getWord(correct) for m in d.checkText(correct)] == []
+
+    words = elisions + [w.replace("’", "'") for w in elisions]
+    rejected = [w for w in words if not d._dict.check(w)
+                and not d._dict.check(w.replace("’", "'"))]
+    text = " ".join(words) + " "
+    assert [m.getWord(text) for m in d.checkText(text)] == rejected
+    for word in rejected:
+        start = text.index(word)
+        [match] = d.findSuggestions(text, start, start + len(word))
+        assert match.replacements == d._dict.suggest(word)
+
+
 def test_checkTextCustomWord():
     d = FakeDictionary()
     d.addWord("Manuskript")
