@@ -31,6 +31,8 @@ class textEditView(QTextEdit):
         self._column = Outline.text
         self._index = None
         self._indexes = None
+        # Text shown for self._indexes by updateText(), see submit()
+        self._indexesText = None
         self._model = None
         self._placeholderText = self.placeholderText()
         self._updating = QMutex()
@@ -347,6 +349,12 @@ class textEditView(QTextEdit):
                     self._placeholderText = self.placeholderText()
 
                 self.setPlaceholderText(self.tr("Various"))
+
+            # The document now shows what the items hold: only what the
+            # user changes from here on is to be submitted (see submit()).
+            # setPlainText() marks the document as modified.
+            self.document().setModified(False)
+            self._indexesText = self.toIdealText()
             self.reconnectDocument()
 
         self._updating.unlock()
@@ -367,11 +375,24 @@ class textEditView(QTextEdit):
                 self._model.setData(QModelIndex(self._index), text)
 
         elif self._indexes:
+            # The items can hold different texts, shown as an empty text
+            # ("Various"). Focus-out and every re-highlight (spellcheck,
+            # dictionary) call submit() as well, so write only what the user
+            # edited: the document is modified (an edit undone with Ctrl+Z
+            # is not) and its text is not the one updateText() showed (an
+            # edit deleted by hand is not either).
+            if not self.document().isModified() or \
+                    text == self._indexesText:
+                return
+
             for i in self._indexes:
                 item = i.internalPointer()
                 if text != F.toString(item.data(self._column)):
                     LOGGER.debug("Submitting many indexes")
                     self._model.setData(i, text)
+
+            self.document().setModified(False)
+            self._indexesText = text
 
     def submitPendingChanges(self):
         """
