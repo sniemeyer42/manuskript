@@ -75,102 +75,6 @@ def test_abstractMethodsRaiseNotImplementedError():
 
 
 ###############################################################################
-# LanguageTool
-###############################################################################
-
-class FakeLTMatch3:
-    """Match as returned by language_tool_python >= 3.0 (snake_case)."""
-    def __init__(self, offset, length, issueType, message, replacements):
-        self.offset = offset
-        self.error_length = length
-        self.rule_issue_type = issueType
-        self.message = message
-        self.replacements = replacements
-
-
-class FakeLTMatch2:
-    """Match as returned by language_tool_python < 3.0 (camelCase)."""
-    def __init__(self, offset, length, issueType, message, replacements):
-        self.offset = offset
-        self.errorLength = length
-        self.ruleIssueType = issueType
-        self.message = message
-        self.replacements = replacements
-
-
-class FakeLTTool:
-    def __init__(self, matchClass=FakeLTMatch3, error=None):
-        self.matchClass = matchClass
-        self.error = error
-        self.checked = []
-
-    def check(self, text):
-        self.checked.append(text)
-        if self.error:
-            raise self.error
-        matches = []
-        start = text.find("teh")
-        if start >= 0:
-            matches.append(self.matchClass(start, 3, "misspelling",
-                                           "Possible spelling mistake found.",
-                                           ["the"]))
-        return matches
-
-
-def fakeLanguageToolDictionary(tool):
-    d = S.LanguageToolDictionary.__new__(S.LanguageToolDictionary)
-    d._lang = "en-US"
-    d._customDict = set()
-    d.tool = tool
-    d._cache = {}
-    return d
-
-
-@pytest.mark.parametrize("matchClass", [FakeLTMatch2, FakeLTMatch3])
-def test_languageToolMatchApiVersions(monkeypatch, matchClass):
-    monkeypatch.setattr(S, "use_language_check", False)
-    d = fakeLanguageToolDictionary(FakeLTTool(matchClass))
-    text = "The teh dog."
-    matches = d.checkText(text)
-    assert [(m.getWord(text), m.locqualityissuetype, m.replacements, m.msg)
-            for m in matches] == [("teh", "misspelling", ["the"],
-                                   "Possible spelling mistake found.")]
-
-
-def test_languageToolCheckErrorIsLoggedOnce(monkeypatch, caplog):
-    monkeypatch.setattr(S, "use_language_check", False)
-    monkeypatch.setattr(S.LanguageToolCache, "_failing", False, raising=False)
-    caplog.set_level("DEBUG", logger=S.LOGGER.name)
-    tool = FakeLTTool(error=RuntimeError("LanguageTool server died"))
-    d = fakeLanguageToolDictionary(tool)
-
-    def warnings():
-        return [r for r in caplog.records if r.levelname == "WARNING"]
-
-    # Not for every paragraph
-    for i in range(5):
-        assert d.checkText("Paragraph {}.".format(i)) == []
-    assert len(tool.checked) == 5
-    assert len(warnings()) == 1
-
-    # Unless it worked in between
-    tool.error = None
-    d.checkText("The teh dog.")
-    tool.error = RuntimeError("LanguageTool server died again")
-    d.checkText("Another paragraph.")
-    assert len(warnings()) == 2
-
-
-def test_languageToolCheckErrorDoesNotRaise(monkeypatch):
-    monkeypatch.setattr(S, "use_language_check", False)
-    tool = FakeLTTool(error=RuntimeError("LanguageTool server died"))
-    d = fakeLanguageToolDictionary(tool)
-    assert d.checkText("The teh dog.") == []
-    assert d.findSuggestions("The teh dog.", 5, 5) == []
-    assert tool.checked
-
-
-###############################################################################
 # symspellpy detection
 ###############################################################################
 
@@ -367,19 +271,6 @@ def test_symspellDefaultDictionaryIsAvailable(monkeypatch, fakeSymspell):
     assert S.SymSpellDictionary(S.SymSpellDictionary.getDefaultDictionary())
 
 
-def test_languageToolDefaultDictionaryIsAvailable(monkeypatch):
-    fakeLocale(monkeypatch, "en_GB")
-    monkeypatch.setattr(S, "use_language_check", False)
-    monkeypatch.setattr(S, "languagetool", types.SimpleNamespace(
-        utils=types.SimpleNamespace(get_locale_language=lambda: "en_GB")))
-    monkeypatch.setattr(S.LanguageToolDictionary, "isInstalled",
-                        staticmethod(lambda: True))
-    monkeypatch.setattr(S.LanguageToolDictionary, "availableDictionaries",
-                        staticmethod(lambda: ["auto", "de", "de-DE", "en",
-                                              "en-GB", "en-US"]))
-    assert S.LanguageToolDictionary.getDefaultDictionary() == "en-GB"
-
-
 @pytest.mark.parametrize("locale, enchantDictionaries, expected", [
     # The language of the system in any library, before English
     ("fr_FR", ["de_DE", "en_US"], "pyspellchecker:fr"),
@@ -449,33 +340,22 @@ def test_setDictEnablesSpellcheckAgain(monkeypatch):
 
 @pytest.fixture
 def dictionaryMenu(MW, monkeypatch):
-    """MainWindow whose dictionary menu lists fake libraries. "Lazy" has to
-    be started to list its dictionaries (like LanguageTool)."""
+    """MainWindow whose dictionary menu lists fake libraries."""
     from PyQt5.QtWidgets import QMenu, QActionGroup
     from PyQt5.QtCore import Qt
     from manuskript import functions as F
     from manuskript import settings
 
-    started = []
-
     def availableDictionaries():
-        dictionaries = OrderedDict([("Fake", ["aa_AA", "bb_BB"]),
-                                    ("Other", ["bb_BB", "cc_CC"])])
-        dictionaries["Lazy"] = ["dd_DD"] if "Lazy" in started else None
-        return dictionaries
-
-    def startLibrary(lib):
-        if lib not in started:
-            started.append(lib)
+        return OrderedDict([("Fake", ["aa_AA", "bb_BB"]),
+                            ("Other", ["bb_BB", "cc_CC"])])
 
     monkeypatch.setattr(S.Spellchecker, "isInstalled", staticmethod(lambda: True))
     monkeypatch.setattr(S.Spellchecker, "availableDictionaries",
                         staticmethod(availableDictionaries))
-    monkeypatch.setattr(S.Spellchecker, "startLibrary", staticmethod(startLibrary))
     monkeypatch.setattr(S.Spellchecker, "supportedLibraries",
                         staticmethod(lambda: OrderedDict([("Fake", None),
-                                                          ("Other", None),
-                                                          ("Lazy", None)])))
+                                                          ("Other", None)])))
     monkeypatch.setattr(S.Spellchecker, "getDefaultDictionary",
                         staticmethod(lambda: "Fake:aa_AA"))
     monkeypatch.setattr(S.Spellchecker, "getDictionary",
@@ -487,12 +367,10 @@ def dictionaryMenu(MW, monkeypatch):
     if not hasattr(MW, "menuDict"):
         monkeypatch.setattr(MW, "menuDict", QMenu(), raising=False)
         monkeypatch.setattr(MW, "menuDictGroup", QActionGroup(MW), raising=False)
-    MW.startedLibraries = started
     yield MW
 
     # Rebuild the real menu
     monkeypatch.undo()
-    del MW.startedLibraries
     if hasattr(MW, "menuDict"):
         MW.updateMenuDict()
 
@@ -563,124 +441,147 @@ def test_dictionaryMenuKeepsLegacyDictionaryName(dictionaryMenu):
     assert settings.dict == "Fake:aa_AA"
 
 
-def test_dictionaryMenuStartsLibrariesOnlyWhenNeeded(dictionaryMenu):
-    from PyQt5.QtWidgets import qApp
+###############################################################################
+# LanguageTool dictionaries of older versions
+###############################################################################
+
+# LanguageTool is no longer supported. Versions that supported it stored its
+# dictionaries like the others, as "dict" in the settings.txt of the project:
+# "LanguageTool:en-US". Such a project is treated like one whose dictionary
+# is not installed.
+
+def test_languageToolDictionaryIsNotAvailable(resources):
+    assert "LanguageTool" not in S.Spellchecker.supportedLibraries()
+    assert "LanguageTool" not in S.Spellchecker.availableDictionaries()
+    assert S.Spellchecker.getDictionary("LanguageTool:en-US") is None
+    assert S.Spellchecker.dictionaries == {}
+
+
+@pytest.mark.parametrize("dictionary", ["LanguageTool:en-US", "LanguageTool:auto"])
+def test_dictionaryMenuReplacesLanguageToolDictionary(dictionaryMenu, dictionary):
     from manuskript import settings
     MW = dictionaryMenu
 
-    settings.dict = "Fake:aa_AA"
+    settings.dict = dictionary
     MW.updateMenuDict()
-    assert "Lazy" not in MW.startedLibraries
-    startActions = [a for a in MW.menuDict.actions()
-                    if a.text() == "Start Lazy to list its dictionaries"]
-    assert len(startActions) == 1
-
-    # The user asks for it
-    startActions[0].trigger()
-    qApp.processEvents()
-    assert "Lazy" in MW.startedLibraries
-    assert ("Lazy", "dd_DD") in [(a.data, a.text().replace("&", ""))
-                                 for a in MW.menuDictGroup.actions()]
+    assert settings.dict == "Fake:aa_AA"
     assert checkedDictionaries(MW) == [("Fake", "aa_AA")]
-
-    # The project uses it
-    MW.startedLibraries.clear()
-    settings.dict = "Lazy:dd_DD"
-    MW.updateMenuDict()
-    assert "Lazy" in MW.startedLibraries
-    assert checkedDictionaries(MW) == [("Lazy", "dd_DD")]
+    assert not [a.text() for a in MW.menuDict.actions()
+                if "LanguageTool" in a.text()]
 
 
-###############################################################################
-# LanguageTool startup
-###############################################################################
+def test_projectWithLanguageToolDictionaryOpens(MWNoProject, dictionaryMenu,
+                                                tmp_path, monkeypatch, caplog):
+    import os
+    from PyQt5.QtWidgets import QMessageBox
+    from manuskript import settings
+    from manuskript.tests.load_save.helpers import copySample
+    MW = dictionaryMenu
 
-@pytest.fixture
-def fakeLanguageTool(monkeypatch):
-    """language_tool_python whose LanguageTool records how often it was
-    created (each one would start a Java server)."""
-    lt = types.SimpleNamespace(created=[], error=None, which=[])
+    path = copySample(tmp_path)
+    settingsFile = os.path.join(path[:-4], "settings.txt")
+    with open(settingsFile, encoding="utf-8") as f:
+        projectSettings = json.load(f)
+    projectSettings["dict"] = "LanguageTool:en-US"
+    with open(settingsFile, "w", encoding="utf-8") as f:
+        json.dump(projectSettings, f, indent=4, sort_keys=True)
 
-    class FakeLanguageTool:
-        def __init__(self, language=None):
-            lt.created.append(language)
-            if lt.error:
-                raise lt.error
+    dialogs = []
+    for name in ["critical", "warning", "information", "question"]:
+        monkeypatch.setattr(QMessageBox, name, staticmethod(
+            lambda *args, name=name: dialogs.append(name) or QMessageBox.Ok))
+    caplog.set_level("WARNING")
 
-        def _get_languages(self):
-            return {"auto", "en", "en-US", "de", "de-DE"}
+    try:
+        # Opened twice: no error the second time either
+        for i in range(2):
+            MW.loadProject(path)
+            assert MW.currentProject == path
+            assert settings.dict == "Fake:aa_AA"
+            assert checkedDictionaries(MW) == [("Fake", "aa_AA")]
+            assert MW.saveDatas() is True
+            with open(settingsFile, encoding="utf-8") as f:
+                assert json.load(f)["dict"] == "Fake:aa_AA"
+            MW.projectDirty = False
+            MW.closeProject()
 
-    def which(name):
-        lt.which.append(name)
-        return "/usr/bin/" + name
+            with open(settingsFile, "w", encoding="utf-8") as f:
+                json.dump(projectSettings, f, indent=4, sort_keys=True)
 
-    def system(command):
-        raise AssertionError("os.system({!r}) was called".format(command))
-
-    monkeypatch.setattr(S, "languagetool", types.SimpleNamespace(
-        LanguageTool=FakeLanguageTool,
-        utils=types.SimpleNamespace(get_locale_language=lambda: "hu_HU")))
-    monkeypatch.setattr(S, "use_language_check", False)
-    monkeypatch.setattr(S.LanguageToolDictionary, "_tool", None)
-    monkeypatch.setattr(S.LanguageToolDictionary, "_toolFailed", False,
-                        raising=False)
-    monkeypatch.setattr(S.LanguageToolDictionary, "_javaInstalled", None,
-                        raising=False)
-    monkeypatch.setattr(S.shutil, "which", which)
-    monkeypatch.setattr(S.os, "system", system)
-    monkeypatch.setattr(S.Spellchecker, "implementations", [S.LanguageToolDictionary])
-    return lt
-
-
-def test_languageToolIsOnlyStartedWhenNeeded(fakeLanguageTool):
-    lt = fakeLanguageTool
-    for i in range(3):
-        assert S.Spellchecker.isInstalled()
-        assert S.Spellchecker.availableLibraries() == ["LanguageTool"]
-        assert S.Spellchecker.availableDictionaries() == {"LanguageTool": None}
-    assert lt.created == []
-    assert lt.which == ["java"]
-
-    S.Spellchecker.startLibrary("LanguageTool")
-    S.Spellchecker.startLibrary("LanguageTool")
-    # A language that LanguageTool supports, whatever the system locale
-    assert lt.created == ["en-US"]
-    assert S.Spellchecker.availableDictionaries() == {
-        "LanguageTool": ["auto", "de", "de-DE", "en", "en-US"]}
-    assert lt.created == ["en-US"]
+        assert dialogs == []
+        assert [r.getMessage() for r in caplog.records
+                if r.levelname in ("ERROR", "CRITICAL") or r.exc_info] == []
+    finally:
+        MW.projectDirty = False
+        MW.closeProject()
 
 
-def test_languageToolStartFailureIsRemembered(fakeLanguageTool):
-    lt = fakeLanguageTool
-    lt.error = ValueError("unsupported language")
-    S.Spellchecker.startLibrary("LanguageTool")
-    S.Spellchecker.startLibrary("LanguageTool")
-    assert S.LanguageToolDictionary.getTool() is None
-    assert lt.created == ["en-US"]
-    assert not S.LanguageToolDictionary.isInstalled()
-    assert S.Spellchecker.availableDictionaries() == {}
-    assert S.Spellchecker.getDictionary("LanguageTool:en-US") is None
+def test_projectWithLanguageToolDictionaryOpensWithoutLibrary(MWNoProject,
+                                                              tmp_path,
+                                                              monkeypatch, caplog):
+    import os
+    from PyQt5.QtWidgets import QMessageBox
+    from manuskript import settings
+    from manuskript.tests.load_save.helpers import copySample
+    from manuskript.ui.views.textEditView import textEditView
+    MW = MWNoProject
 
+    # No spellcheck library is installed
+    monkeypatch.setattr(S.Spellchecker, "implementations", [])
+    monkeypatch.setattr(S.Spellchecker, "dictionaries", {})
+    monkeypatch.setattr(settings, "dict", settings.dict)
+    monkeypatch.setattr(settings, "spellcheck", settings.spellcheck)
 
-def test_languageToolIsNotStartedForTheDefaultDictionary(fakeLanguageTool,
-                                                        monkeypatch):
-    lt = fakeLanguageTool
-    fakeLocale(monkeypatch, "de_DE")
-    fakeEnchant(monkeypatch, ["en_US"], "de_DE")
-    monkeypatch.setattr(S.Spellchecker, "implementations",
-                        [S.EnchantDictionary, S.LanguageToolDictionary])
-    # Finding out if LanguageTool has German would start it
-    assert S.Spellchecker.getDefaultDictionary() == "PyEnchant:en_US"
-    assert lt.created == []
+    path = copySample(tmp_path)
+    settingsFile = os.path.join(path[:-4], "settings.txt")
+    with open(settingsFile, encoding="utf-8") as f:
+        projectSettings = json.load(f)
+    projectSettings["dict"] = "LanguageTool:en-US"
+    projectSettings["spellcheck"] = True
+    with open(settingsFile, "w", encoding="utf-8") as f:
+        json.dump(projectSettings, f, indent=4, sort_keys=True)
 
-    S.Spellchecker.startLibrary("LanguageTool")
-    assert S.Spellchecker.getDefaultDictionary() == "LanguageTool:de-DE"
+    dialogs = []
+    for name in ["critical", "warning", "information", "question"]:
+        monkeypatch.setattr(QMessageBox, name, staticmethod(
+            lambda *args, name=name: dialogs.append(name) or QMessageBox.Ok))
+    caplog.set_level("WARNING")
 
+    def firstText(item):
+        for child in item.children():
+            if child.isText():
+                return child
+            found = firstText(child)
+            if found:
+                return found
 
-def test_languageToolNeedsJava(fakeLanguageTool, monkeypatch):
-    monkeypatch.setattr(S.shutil, "which", lambda name: None)
-    assert not S.Spellchecker.isInstalled()
-    assert fakeLanguageTool.created == []
+    try:
+        # Opened twice: no error the second time either
+        for i in range(2):
+            MW.loadProject(path)
+            assert MW.currentProject == path
+            # The setting is kept, but no editor checks the spelling
+            assert settings.dict == "LanguageTool:en-US"
+            MW.tabMain.setCurrentIndex(MW.TabRedac)
+            MW.mainEditor.setCurrentModelIndex(firstText(MW.mdlOutline.rootItem).index())
+            editors = MW.findChildren(textEditView)
+            assert MW.mainEditor.currentEditor().txtRedacText in editors
+            assert [w for w in editors if w.spellcheck] == []
+            assert MW.saveDatas() is True
+            with open(settingsFile, encoding="utf-8") as f:
+                saved = json.load(f)
+            assert (saved["dict"], saved["spellcheck"]) == ("LanguageTool:en-US", True)
+            MW.mainEditor.closeAllTabs()
+            MW.projectDirty = False
+            MW.closeProject()
+
+        assert dialogs == []
+        assert [r.getMessage() for r in caplog.records
+                if r.levelname in ("ERROR", "CRITICAL") or r.exc_info] == []
+    finally:
+        MW.mainEditor.closeAllTabs()
+        MW.projectDirty = False
+        MW.closeProject()
 
 
 ###############################################################################
@@ -768,23 +669,20 @@ class UnusedLibrary:
 
 
 @pytest.mark.parametrize("cls", [S.EnchantDictionary, S.PySpellcheckerDictionary,
-                                 S.SymSpellDictionary, S.LanguageToolDictionary])
+                                 S.SymSpellDictionary])
 def test_wordsWithoutLettersAreNotChecked(monkeypatch, cls):
     # enchant raises ValueError for an empty word, which would close the
     # application while highlighting
-    monkeypatch.setattr(S.LanguageToolCache, "_failing", False)
     library = UnusedLibrary()
     d = cls.__new__(cls)
     d._lang = "fake"
     d._customDict = set()
-    d._cache = {}
-    d._dict = d.tool = library
+    d._dict = library
     for word in ["", "'", "''", "’", "'’"]:
         assert not d.isMisspelled(word)
         assert d.getSuggestions(word) == []
         assert not d.isWordMisspelled(word)
-        if cls is not S.LanguageToolDictionary:    # checks the whole text
-            assert d.findSuggestions("a " + word + " b", 2, 2 + len(word)) == []
+        assert d.findSuggestions("a " + word + " b", 2, 2 + len(word)) == []
     assert library.asked == []
 
 

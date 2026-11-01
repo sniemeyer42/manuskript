@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, shutil, unicodedata, zlib
+import os, gzip, json, glob, re, unicodedata, zlib
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
@@ -54,17 +54,6 @@ try:
 except ImportError:
     symspellpy = None
 
-
-use_language_check = False
-
-try:
-    try:
-        import language_tool_python as languagetool
-    except:
-        import language_check as languagetool
-        use_language_check = True
-except:
-    languagetool = None
 
 def pickDictionary(available, preferred, fallback=(), strict=False):
     """
@@ -133,25 +122,12 @@ class Spellchecker:
 
     @staticmethod
     def availableDictionaries():
-        """
-        Returns the dictionaries of every installed library. They are None for
-        a library that has to be started first (see startLibrary).
-        """
+        """Returns the dictionaries of every installed library."""
         dictionaries = OrderedDict()
         for impl in Spellchecker.implementations:
             if impl.isInstalled():
-                if impl.isStarted():
-                    dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
-                else:
-                    dictionaries[impl.getLibraryName()] = None
+                dictionaries[impl.getLibraryName()] = impl.availableDictionaries()
         return dictionaries
-
-    @staticmethod
-    def startLibrary(lib):
-        """Starts the library named lib, which can take a while."""
-        for impl in Spellchecker.implementations:
-            if impl.isInstalled() and impl.getLibraryName() == lib:
-                impl.start()
 
     @staticmethod
     def normalizeDictName(lib, dictionary):
@@ -160,12 +136,9 @@ class Spellchecker:
     @staticmethod
     def getDefaultDictionary():
         # A dictionary in the language of the system is better than one in
-        # another language from a library of higher priority. A library that
-        # is not started is only started if no other one has a dictionary.
+        # another language from a library of higher priority.
         for strict in [True, False]:
             for impl in Spellchecker.implementations:
-                if strict and not impl.isStarted():
-                    continue
                 default = impl.getDefaultDictionary(strict)
                 if default:
                     return Spellchecker.normalizeDictName(impl.getLibraryName(), default)
@@ -345,18 +318,6 @@ class BasicDictionary:
     @staticmethod
     def isInstalled():
         raise NotImplementedError
-
-    @staticmethod
-    def isStarted():
-        """
-        Returns False if the library has to be started (see start) before it
-        can list its dictionaries, because starting it is slow.
-        """
-        return True
-
-    @staticmethod
-    def start():
-        pass
 
     @staticmethod
     def getDefaultDictionary(strict=False):
@@ -776,235 +737,8 @@ class SymSpellDictionary(BasicDictionary):
         # Since 6.3.8
         self._dict.delete_dictionary_entry(word.lower())
 
-def get_languagetool_match_attribute(match, *names):
-    # language_tool_python >= 3.0 uses snake_case names for the attributes of
-    # a match (error_length), older releases use camelCase ones (errorLength).
-    for name in names:
-        try:
-            return getattr(match, name)
-        except AttributeError:
-            pass
-    raise AttributeError(names[0])
-
-def get_languagetool_match_errorLength(match):
-    if use_language_check:
-        return match.errorlength
-    else:
-        return get_languagetool_match_attribute(match, "error_length", "errorLength")
-
-def get_languagetool_match_ruleIssueType(match):
-    if use_language_check:
-        return match.locqualityissuetype
-    else:
-        return get_languagetool_match_attribute(match, "rule_issue_type", "ruleIssueType")
-
-def get_languagetool_match_message(match):
-    if use_language_check:
-        return match.msg
-    else:
-        return match.message
-
-class LanguageToolCache:
-
-    # Whether the last check failed: a server that died would otherwise log a
-    # warning for every paragraph.
-    _failing = False
-
-    def __init__(self, tool, text):
-        self._length = len(text)
-        self._matches = self._buildMatches(tool, text)
-
-    def getMatches(self):
-        return self._matches
-
-    def _buildMatches(self, tool, text):
-        matches = []
-
-        # This runs while highlighting, where an exception would terminate
-        # the application. If the server fails (or its API changed), only
-        # skip the check of this text.
-        try:
-            for match in tool.check(text):
-                start = match.offset
-                end = start + get_languagetool_match_errorLength(match)
-
-                basic_match = BasicMatch(start, end)
-                basic_match.locqualityissuetype = get_languagetool_match_ruleIssueType(match)
-                basic_match.replacements = match.replacements
-                basic_match.msg = get_languagetool_match_message(match)
-
-                matches.append(basic_match)
-        except Exception as e:
-            if LanguageToolCache._failing:
-                LOGGER.debug("LanguageTool check failed: %s", e)
-            else:
-                LOGGER.warning("LanguageTool check failed: %s", e)
-                LanguageToolCache._failing = True
-            return []
-
-        LanguageToolCache._failing = False
-        return matches
-
-    def update(self, tool, text):
-        if len(text) != self._length:
-            self._matches = self._buildMatches(tool, text)
-
-def get_languagetool_languages(tool):
-    if use_language_check:
-        return languagetool.get_languages()
-    else:
-        return tool._get_languages()
-
-def get_languagetool_locale_language():
-    if use_language_check:
-        return languagetool.get_locale_language()
-    else:
-        return languagetool.utils.get_locale_language()
-
-class LanguageToolDictionary(BasicDictionary):
-
-    _tool = None
-    _toolFailed = False
-    _javaInstalled = None
-
-    def __init__(self, name):
-        BasicDictionary.__init__(self, name)
-
-        if not (self._lang and self._lang in get_languagetool_languages(self.getTool())):
-            self._lang = self.getDefaultDictionary()
-
-        self.tool = languagetool.LanguageTool(self._lang)
-        self._cache = {}
-
-    @staticmethod
-    def getTool():
-        # Creating the tool starts a LanguageTool server in Java (after
-        # downloading LanguageTool the first time), so only try it once.
-        if LanguageToolDictionary._tool is None and not LanguageToolDictionary._toolFailed:
-            try:
-                # The language of this tool does not matter, but the language of
-                # the system locale might not be supported by LanguageTool.
-                LanguageToolDictionary._tool = languagetool.LanguageTool("en-US")
-            except Exception as e:
-                LOGGER.warning("Could not start LanguageTool: %s", e)
-                LanguageToolDictionary._toolFailed = True
-
-        return LanguageToolDictionary._tool
-
-    @staticmethod
-    def getLibraryName():
-        return "LanguageTool"
-
-    @staticmethod
-    def getLibraryURL():
-        if use_language_check:
-            return "https://pypi.org/project/language-check/"
-        else:
-            return "https://pypi.org/project/language-tool-python/"
-
-    @staticmethod
-    def isInstalled():
-        if languagetool is None or LanguageToolDictionary._toolFailed:
-            return False
-
-        # LanguageTool needs Java. Does not start LanguageTool, which is slow
-        # (see isStarted).
-        if LanguageToolDictionary._javaInstalled is None:
-            LanguageToolDictionary._javaInstalled = shutil.which("java") is not None
-
-        return LanguageToolDictionary._javaInstalled
-
-    @staticmethod
-    def isStarted():
-        return LanguageToolDictionary._tool is not None
-
-    @staticmethod
-    def start():
-        LanguageToolDictionary.getTool()
-
-    @staticmethod
-    def availableDictionaries():
-        if LanguageToolDictionary.isInstalled():
-            tool = LanguageToolDictionary.getTool()
-            if tool:
-                languages = list(get_languagetool_languages(tool))
-                languages.sort()
-                return languages
-
-        return []
-
-    @staticmethod
-    def getDefaultDictionary(strict=False):
-        if not LanguageToolDictionary.isInstalled():
-            return None
-
-        return pickDictionary(LanguageToolDictionary.availableDictionaries(),
-                              [get_languagetool_locale_language(), QLocale.system().name()],
-                              ["en-US"], strict)
-
-    def checkText(self, text):
-        matches = []
-
-        if len(text) == 0:
-            return matches
-
-        textId = hash(text)
-        cacheEntry = None
-
-        if not textId in self._cache:
-            cacheEntry = LanguageToolCache(self.tool, text)
-
-            self._cache[textId] = cacheEntry
-        else:
-            cacheEntry = self._cache[textId]
-            cacheEntry.update(self.tool, text)
-
-        for match in cacheEntry.getMatches():
-            word = match.getWord(text)
-
-            if not (match.locqualityissuetype == 'misspelling' and self.isCustomWord(word)):
-                matches.append(match)
-
-        return matches
-
-    def _isMisspelled(self, word):
-        if self.isCustomWord(word):
-            return False
-
-        for match in self.checkText(word):
-            if match.locqualityissuetype == 'misspelling':
-                return True
-
-        return False
-
-    def _getSuggestions(self, word):
-        suggestions = []
-
-        for match in self.checkText(word):
-            suggestions += match.replacements
-
-        return suggestions
-
-    def findSuggestions(self, text, start, end):
-        matches = []
-        checked = self.checkText(text)
-
-        if start == end:
-            # Check for containing area:
-            for match in checked:
-                if (start >= match.start and start <= match.end):
-                    matches.append(match)
-        else:
-            # Check for overlapping area:
-            for match in checked:
-                if (match.end > start and match.start < end):
-                    matches.append(match)
-
-        return matches
-
 
 # Register the implementations in order of priority
 Spellchecker.registerImplementation(EnchantDictionary)
 Spellchecker.registerImplementation(SymSpellDictionary)
 Spellchecker.registerImplementation(PySpellcheckerDictionary)
-Spellchecker.registerImplementation(LanguageToolDictionary)

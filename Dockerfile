@@ -41,7 +41,7 @@ WORKDIR /workspace
 
 # Install python packages that are safe and fast to install via pip
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
-RUN pip3 install --no-cache-dir pyinstaller pytest pytest-faulthandler markdown language_tool_python symspellpy pyspellchecker
+RUN pip3 install --no-cache-dir pyinstaller pytest pytest-faulthandler markdown symspellpy pyspellchecker
 
 # Set environment variable for PyQt5 offscreen running
 ENV QT_QPA_PLATFORM=offscreen

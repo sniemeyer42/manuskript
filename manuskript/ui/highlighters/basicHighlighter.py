@@ -28,8 +28,9 @@ class BasicHighlighter(QSyntaxHighlighter):
         self.linkColor = QColor(S.link)
         self.spellingErrorColor = QColor(Qt.red)
 
-        # Matches during checking can be separated by their type (all of them listed here):
-        # https://languagetool.org/development/api/org/languagetool/rules/ITSIssueType.html
+        # Matches during checking can be separated by their type (the
+        # localization quality issue types of ITS 2.0, all of them listed
+        # here). The spellcheckers only report 'misspelling'.
         #
         # These are the colors for actual spell-, grammar- and style-checking:
         self._errorColors = {

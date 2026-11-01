@@ -1921,17 +1921,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if settings.dict is None:
             settings.dict = Spellchecker.getDefaultDictionary()
 
-        # Starting some libraries is slow (LanguageTool runs a Java server), so
-        # only start the one of the project dictionary. The menu offers to start
-        # the others.
-        if settings.dict and ":" in settings.dict:
-            Spellchecker.startLibrary(settings.dict.split(":", 1)[0])
         dictionaries = Spellchecker.availableDictionaries()
 
         # Older versions stored the dictionary name without the library name
         if settings.dict and ":" not in settings.dict:
             for lib, dicts in dictionaries.items():
-                if settings.dict in (dicts or []):
+                if settings.dict in dicts:
                     settings.dict = Spellchecker.normalizeDictName(lib, settings.dict)
                     break
 
@@ -1940,32 +1935,23 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         for lib, dicts in dictionaries.items():
             if dict_available:
                 break
-            for i in dicts or []:
+            for i in dicts:
                 if Spellchecker.normalizeDictName(lib, i) == settings.dict:
                     dict_available = True
                     break
-        # Reset dict to default one if it's unavailable
+        # Reset dict to default one if it's unavailable (a library that is not
+        # installed on this machine, or no longer supported, like LanguageTool)
         if not dict_available:
             settings.dict = Spellchecker.getDefaultDictionary()
-            # Also lists a library that was started to find the default one
-            dictionaries = Spellchecker.availableDictionaries()
 
         for lib, dicts in dictionaries.items():
-            if dicts is None or len(dicts) > 0:
+            if len(dicts) > 0:
                 a = QAction(lib, self.menuDict)
             else:
                 a = QAction(self.tr("{} has no installed dictionaries").format(lib), self.menuDict)
             a.setEnabled(False)
             self.menuDict.addAction(a)
-            if dicts is None:
-                a = QAction(self.tr("Start {} to list its dictionaries").format(lib), self.menuDict)
-                # Need to bound the lib argument otherwise the lambda uses the same lib value across all calls
-                def gen_slot_cb(l):
-                    return lambda: self.startDictionaryLibrary(l)
-                # Not with F.AUC, see below
-                a.triggered.connect(gen_slot_cb(lib))
-                self.menuDict.addAction(a)
-            for i in dicts or []:
+            for i in dicts:
                 a = QAction(i, self.menuDict)
                 a.data = lib
                 a.setCheckable(True)
@@ -2004,16 +1990,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 for w in self.findChildren(textEditView, QRegExp(".*"),
                                            Qt.FindChildrenRecursively):
                     w.setDict(settings.dict)
-
-    def startDictionaryLibrary(self, lib):
-        qApp.setOverrideCursor(Qt.WaitCursor)
-        try:
-            Spellchecker.startLibrary(lib)
-        finally:
-            qApp.restoreOverrideCursor()
-
-        # Not directly, since updateMenuDict() deletes the action calling this
-        QTimer.singleShot(0, self.updateMenuDict)
 
     def openSpellcheckWebPage(self, lib):
         F.openURL(Spellchecker.getLibraryURL(lib))

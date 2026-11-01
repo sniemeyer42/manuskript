@@ -62,7 +62,6 @@ pip_install PyQt5
 pip_install pyenchant
 pip_install pyspellchecker
 pip_install symspellpy
-pip_install language_tool_python
 pip_install markdown
 
 # Clone the repository from Github:
