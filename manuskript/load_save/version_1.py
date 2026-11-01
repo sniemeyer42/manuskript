@@ -407,6 +407,13 @@ def saveProject(zip=None):
 
         except OSError as e:
             LOGGER.error("Cannot save project %s: %s", project, e)
+            # As when saving to a folder, the user is told why
+            dlg = ListDialog(mw)
+            dlg.setModal(True)
+            dlg.setWindowTitle(dlg.tr("Files not saved"))
+            dlg.label.setText(dlg.tr("The following files could not be saved:"))
+            QListWidgetItem("{} ({})".format(project, e.strerror or e), dlg.listWidget)
+            dlg.open()
             return False
 
         return True
@@ -454,12 +461,34 @@ def saveProject(zip=None):
                     dlg.open()
                     return False
 
-                for sub in ["outline", "characters"]:
-                    if os.path.isdir(os.path.join(target, sub)):
-                        shutil.rmtree(os.path.join(target, sub))
-                for f in projectFiles:
-                    if os.path.isfile(os.path.join(target, f)):
-                        os.remove(os.path.join(target, f))
+                removing = target
+                try:
+                    for sub in ["outline", "characters"]:
+                        removing = os.path.join(target, sub)
+                        if os.path.isdir(removing):
+                            shutil.rmtree(removing)
+                    for f in projectFiles:
+                        removing = os.path.join(target, f)
+                        if os.path.isfile(removing):
+                            os.remove(removing)
+                except OSError as e:
+                    # The cache does not describe what is left: the next save tries again.
+                    # What was removed before the error is gone (rmtree does not undo).
+                    LOGGER.error("Cannot save project: cannot remove the files of the older "
+                                 "project in %s: %s", target, e)
+                    # For a file in a subfolder, the error has only its name (Python 3.11)
+                    failed = e.filename if e.filename and os.path.isabs(e.filename) else removing
+                    dlg = ListDialog(mw)
+                    dlg.setModal(True)
+                    dlg.setWindowTitle(dlg.tr("Project not saved"))
+                    dlg.label.setText(dlg.tr(
+                        "The project is saved in a folder named like the project file. This folder "
+                        "holds an older Manuskript project, whose files are removed first. They "
+                        "could not all be removed (some of them may have been removed already), "
+                        "so the project cannot be saved there."))
+                    QListWidgetItem("{} ({})".format(failed, e.strerror or e), dlg.listWidget)
+                    dlg.open()
+                    return False
 
             # From now on, the cache describes what is in the folder.
             freshTarget = False

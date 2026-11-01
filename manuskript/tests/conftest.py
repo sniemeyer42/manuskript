@@ -5,6 +5,17 @@
 
 import pytest
 
+
+def closePreviousProject(MW):
+    """
+    Closes the project that a previous test left open. It is a temporary copy,
+    so its changes are dropped: with "save on quit" off, closing a modified
+    project would open a modal "Save changes?" dialog, which blocks the tests.
+    """
+    MW.projectDirty = False
+    MW.closeProject()
+
+
 @pytest.fixture
 def MW():
     """
@@ -22,7 +33,7 @@ def MWNoProject(MW):
     """
     Take the MainWindow and close andy possibly open project.
     """
-    MW.closeProject()
+    closePreviousProject(MW)
     assert MW.currentProject == None
     return MW
 
@@ -34,7 +45,7 @@ def MWEmptyProject(MW):
     import tempfile
     tf = tempfile.NamedTemporaryFile(suffix=".msk")
 
-    MW.closeProject()
+    closePreviousProject(MW)
     assert MW.currentProject == None
     MW.welcome.createFile(tf.name, overwrite=True)
     assert MW.currentProject != None
@@ -66,7 +77,7 @@ def MWSampleProject(MW):
     import shutil
     shutil.copyfile(src, tf.name)
     shutil.copytree(src[:-4], tf.name[:-4])
-    MW.closeProject()
+    closePreviousProject(MW)
     MW.loadProject(tf.name)
     assert MW.currentProject != None
 

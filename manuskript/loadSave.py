@@ -8,6 +8,7 @@ import zipfile
 
 import manuskript.load_save.version_0 as v0
 import manuskript.load_save.version_1 as v1
+from manuskript.functions import mainWindow
 
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -28,6 +29,32 @@ def clearSaveCache():
     v1.cache = {}
     v1.freshTarget = True
     v1.unreadable = {}
+
+
+def saveCacheState():
+    """Returns what the save code knows about the current project folder, so that
+    restoreSaveCache() can bring it back (e.g. after a failed "Save as..."): the save
+    cache, and the paths the characters and outline items were last saved to, which
+    saveProject() updates as it goes (it detects renamed and moved items with them)."""
+    mw = mainWindow()
+    paths = [(c, "lastPath", c.lastPath) for c in mw.mdlCharacter.characters]
+
+    def addItems(item):
+        for child in item.children():
+            paths.append((child, "_lastPath", child._lastPath))
+            addItems(child)
+
+    addItems(mw.mdlOutline.rootItem)
+    return dict(v1.cache), v1.freshTarget, dict(v1.unreadable), paths
+
+
+def restoreSaveCache(state):
+    cache, freshTarget, unreadable, paths = state
+    v1.cache = dict(cache)
+    v1.freshTarget = freshTarget
+    v1.unreadable = dict(unreadable)
+    for item, attribute, path in paths:
+        setattr(item, attribute, path)
 
 
 def loadProject(project):

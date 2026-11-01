@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-import os, gzip, json, glob, re, shutil, unicodedata
+import os, gzip, json, glob, re, shutil, unicodedata, zlib
 from PyQt5.QtCore import QLocale
 from collections import OrderedDict
 from manuskript.functions import writablePath
@@ -293,16 +293,38 @@ class BasicDictionary:
         if not self._lang:
             self._lang = self.getDefaultDictionary()
 
+        # The subclasses add the custom words to their dictionary
         self._customDict = set()
         customPath = self.getCustomDictionaryPath()
         try:
             with gzip.open(customPath, 'rt', encoding='utf-8') as f:
-                self._customDict = set(json.loads(f.read()))
-                for word in self._customDict:
-                    self._dict.create_dictionary_entry(word, self.CUSTOM_COUNT)
-        except:
-            # If error loading the file, overwrite with empty dictionary
-            self._saveCustomDict()
+                words = json.loads(f.read())
+            if not isinstance(words, list) or \
+                    not all(isinstance(w, str) for w in words):
+                raise ValueError("not a list of words")
+            self._customDict = set(words)
+
+        except FileNotFoundError:
+            try:
+                self._saveCustomDict()
+            except OSError as e:
+                LOGGER.warning("Cannot create the custom dictionary %s: %s", customPath, e)
+
+        except (OSError, EOFError, ValueError, zlib.error) as e:
+            # Damaged file: it is moved aside, so that the words can be recovered by hand,
+            # and the dictionary starts without custom words.
+            backup = customPath + ".damaged"
+            n = 1
+            while os.path.exists(backup):
+                n += 1
+                backup = "{}.damaged.{}".format(customPath, n)
+            try:
+                os.replace(customPath, backup)
+                LOGGER.error("Cannot read the custom dictionary %s (%s), it has been moved "
+                             "to %s.", customPath, e, backup)
+            except OSError as e2:
+                LOGGER.error("Cannot read the custom dictionary %s: %s (and cannot move it "
+                             "aside: %s)", customPath, e, e2)
 
     @property
     def name(self):
@@ -524,9 +546,11 @@ class BasicDictionary:
         return os.path.join(self.getResourcesPath(), "{}.json.gz".format(self._lang))
 
     def _saveCustomDict(self):
-        customPath = self.getCustomDictionaryPath()
-        with gzip.open(customPath, "wt", newline="\n") as f:
-            f.write(json.dumps(list(self._customDict)))
+        # Through a temporary file: an interrupted write must not destroy the custom
+        # words. Imported here, a module-level import would be circular.
+        from manuskript.load_save.version_1 import writeFile
+        content = json.dumps(sorted(self._customDict))
+        writeFile(self.getCustomDictionaryPath(), gzip.compress(content.encode("utf-8")))
 
 
 class EnchantDictionary(BasicDictionary):
