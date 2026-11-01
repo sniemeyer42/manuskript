@@ -4,6 +4,10 @@
 """Tests for functions"""
 
 import re, os
+import types
+
+import pytest
+
 from manuskript import functions as F
 
 def test_wordCount():
@@ -143,3 +147,49 @@ def test_search_multiple_strMatches_caseSensitive():
         (6, 10, "TeXt, <b>TEXT</b> and more text"),
         (20, 24, "TeXt, TEXT and more <b>text</b>")
     ]
+
+
+@pytest.fixture
+def fileManager(monkeypatch):
+    """Records the programs showInFolder() starts and the URLs it opens,
+    without starting or opening anything. Returns a function that sets the
+    platform (sys.platform)."""
+    calls = types.SimpleNamespace(started=[], opened=[])
+    monkeypatch.setattr(F, "QProcess", types.SimpleNamespace(
+        startDetached=lambda *args: calls.started.append(args) or True,
+        execute=lambda *args: calls.started.append(args) or 0))
+    monkeypatch.setattr(F, "QDesktopServices", types.SimpleNamespace(
+        openUrl=lambda url: calls.opened.append(url) or True))
+
+    def platform(name):
+        monkeypatch.setattr(F, "sys", types.SimpleNamespace(platform=name))
+        return calls
+    return platform
+
+
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_showInFolderOpensFileURL(fileManager, tmp_path, platform):
+    """Outside Windows, the folder (or the file itself) is opened as a file
+    URL, no program is started."""
+    from PyQt5.QtCore import QUrl
+    calls = fileManager(platform)
+    log = tmp_path / "manuskript.log"
+    log.write_text("")
+    assert F.showInFolder(str(log))
+    assert F.showInFolder(str(log), open_file_as_fallback=True)
+    assert F.showInFolder(str(tmp_path))
+    assert calls.started == []
+    assert calls.opened == [QUrl.fromLocalFile(str(tmp_path)),
+                            QUrl.fromLocalFile(str(log)),
+                            QUrl.fromLocalFile(str(tmp_path))]
+
+
+def test_showInFolderOnWindows(fileManager, tmp_path):
+    """On Windows, Explorer shows the file highlighted in its folder."""
+    from PyQt5.QtCore import QDir
+    calls = fileManager("win32")
+    log = tmp_path / "manuskript.log"
+    log.write_text("")
+    assert F.showInFolder(str(log))
+    assert calls.started == [("explorer", ["/select,", QDir.toNativeSeparators(str(log))])]
+    assert calls.opened == []

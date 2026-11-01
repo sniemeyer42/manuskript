@@ -549,7 +549,9 @@ def getGitRevisionAsString(base_path, short=False):
 
 def showInFolder(path, open_file_as_fallback=False):
     '''
-    Show a file or folder in explorer/finder, highlighting it where possible.
+    Show a file or folder in the file manager. Windows Explorer highlights it,
+    elsewhere its folder is opened (or the file itself, with
+    open_file_as_fallback).
     Source: https://stackoverflow.com/a/46019091/3388962
     '''
     path = os.path.abspath(path)
@@ -560,27 +562,12 @@ def showInFolder(path, open_file_as_fallback=False):
         args.append(QDir.toNativeSeparators(path))
         if QProcess.startDetached('explorer', args):
             return True
-    elif sys.platform == 'darwin':
-        args = []
-        args.append('-e')
-        args.append('tell application "Finder"')
-        args.append('-e')
-        args.append('activate')
-        args.append('-e')
-        args.append('select POSIX file "%s"' % path)
-        args.append('-e')
-        args.append('end tell')
-        args.append('-e')
-        args.append('return')
-        if not QProcess.execute('/usr/bin/osascript', args):
-            return True
-        #if not QtCore.QProcess.execute('/usr/bin/open', [dirPath]):
-        #    return
     # TODO: Linux is not implemented. It has many file managers (nautilus, xdg-open, etc.)
     # each of which needs special ways to highlight a file in a file manager window.
 
-    # Fallback.
-    return QDesktopServices.openUrl(QUrl(path if open_file_as_fallback else dirPath))
+    # Fallback: open the folder (or file) as a file URL. QUrl(path) is not
+    # one: it has no scheme, or the drive letter as scheme on Windows.
+    return QDesktopServices.openUrl(QUrl.fromLocalFile(path if open_file_as_fallback else dirPath))
 
 
 # Spellchecker loads writablePath from this file, so we need to load it after they get defined

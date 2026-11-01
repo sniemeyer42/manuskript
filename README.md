@@ -7,7 +7,7 @@ tool for writers.
 [![manuskript](https://snapcraft.io/manuskript/badge.svg)](https://snapcraft.io/manuskript)
 [![translations](https://hosted.weblate.org/widgets/manuskript/-/translations/svg-badge.svg)](https://hosted.weblate.org/projects/manuskript/translations)
 
-Manuskript runs on GNU/Linux, Mac OS X, and Windows.
+Manuskript runs on GNU/Linux and Windows.
 
 ![Main view](https://www.theologeek.ch/manuskript/wp-content/uploads/2017/11/manuskript-0.5.0-main-view.jpg)
 

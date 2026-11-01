@@ -67,32 +67,3 @@ wexe = EXE(
 coll = COLLECT(
     exe, wexe, a.binaries, a.zipfiles, a.datas, strip=False, upx=True, name="manuskript"
 )
-
-app = BUNDLE(
-    coll,
-    name="manuskript.app",
-    icon=os.path.join(SPECPATH, "icons/Manuskript/Manuskript.icns"),
-    bundle_identifier="ch.theologeek.manuskript",
-    version=version,
-    info_plist={
-        "NSPrincipalClass": "NSApplication",
-        "NSAppleScriptEnabled": False,
-        "NSHighResolutionCapable": True,
-        "CFBundleURLTypes": [
-            {
-                "CFBundleURLName": "MSK",
-                "CFBundleTypeRole": "Editor",
-                "CFBundleURLSchemes": ["msk"],
-            }
-        ],
-        "CFBundleDocumentTypes": [
-            {
-                "CFBundleTypeName": "MSK",
-                "CFBundleTypeIconFile": "icons/Manuscript/manuskript",
-                "CFBundleTypeExtensions": ["msk"],
-                "CFBundleTypeRole": "Editor",
-                "LSHandlerRank": "Owner",
-            }
-        ],
-    },
-)

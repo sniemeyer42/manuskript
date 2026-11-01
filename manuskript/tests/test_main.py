@@ -140,10 +140,9 @@ def test_signalWhileAskingToSave(firstClose, tmp_path):
     shutil.copytree(os.path.join(spDir, "book-of-acts"), str(project)[:-4])
 
     # Keep the real settings untouched: main.run() uses the real
-    # organization name (CFFIXED_USER_HOME is the macOS equivalent of HOME)
+    # organization name
     env = dict(os.environ)
     env.update(HOME=str(tmp_path),
-               CFFIXED_USER_HOME=str(tmp_path),
                XDG_CONFIG_HOME=str(tmp_path / "config"),
                XDG_DATA_HOME=str(tmp_path / "data"),
                QT_QPA_PLATFORM="offscreen")

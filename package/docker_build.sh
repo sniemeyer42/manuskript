@@ -40,7 +40,7 @@ fi
 
 # Helper function to run build command on a copy inside the container
 # and copy the outputs back to the host. This avoids permission issues
-# and read-only host mounts (e.g. virtiofs on macOS Lima VM).
+# and read-only host mounts.
 run_build_in_container() {
     local cmd="$1"
     local container_name="manuskript-build-temp-$(date +%s)"
