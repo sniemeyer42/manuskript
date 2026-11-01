@@ -163,3 +163,64 @@ def test_writeSettingsThroughSymlink(MWEmptyProject, exporterSettingsPath, tmp_p
     plainText().settingsWidget().writeSettings()
     assert os.path.islink(exporterSettingsPath)
     assert "Content" in target.read_text()
+
+
+# The filters "Subitems of", "Labels" and "Status" were never implemented
+UNFINISHED_FILTERS = ["chkContentParent", "cmbContentParent",
+                      "chkContentLabels", "lstContentLabels",
+                      "chkContentStatus", "lstContentStatus"]
+
+
+def test_unfinishedFiltersAreHidden(plainText):
+    from PyQt5.QtCore import QCoreApplication
+    f, w = plainText
+    for name in UNFINISHED_FILTERS:
+        assert getattr(w, name).isHidden(), name
+    assert not w.chkContentIgnoreCompile.isHidden()
+
+    # The note "(Not fully implemented yet.)" is removed from the text, as
+    # translated in the language of the tests, the sentence before it stays
+    text = w.label_2.text()
+    translated = QCoreApplication.translate(
+        "exporterSettings",
+        "<html><head/><body><p>Filters what items will be included in the final "
+        "export.<br/><span style=\" color:#773333;\">(Not fully implemented "
+        "yet.)</span></p></body></html>")
+    end = "</p></body></html>"
+    assert "<span" not in text and "<br" not in text
+    assert text.endswith(end)
+    assert translated.startswith(text[:-len(end)])
+    assert len(text) > len("<html><head/><body><p>" + end)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_unfinishedFilterSettingsAreKeptAndIgnored(MWEmptyProject, exporterSettingsPath,
+                                                   chapter, caplog, value):
+    """exporter.ini written with values for these filters still loads, the
+    values are kept, and the export ignores them."""
+    import json
+    from manuskript.exporter.manuskript.plainText import plainText
+    keys = ["Parent", "Labels", "Status"]
+    f = plainText()
+
+    # Default values, written for other versions that read them
+    w = f.settingsWidget()
+    s = w.getSettings()
+    assert [s["Content"][k] for k in keys] == [False, False, False]
+    expected = f.output(w)
+
+    s["Content"].update({k: value for k in keys})
+    with open(exporterSettingsPath, "w", encoding="utf-8") as fp:
+        json.dump(s, fp)
+
+    caplog.set_level("WARNING")
+    w = f.settingsWidget()
+    assert [r.getMessage() for r in caplog.records] == []
+    for name in UNFINISHED_FILTERS:
+        assert getattr(w, name).isHidden(), name
+    assert f.output(w) == expected
+
+    w.writeSettings()
+    with open(exporterSettingsPath, encoding="utf-8") as fp:
+        content = json.load(fp)["Content"]
+    assert [content[k] for k in keys] == [value, value, value]

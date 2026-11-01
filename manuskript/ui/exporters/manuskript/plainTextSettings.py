@@ -2,10 +2,11 @@
 # --!-- coding: utf8 --!--
 import json
 import os
+import re
 
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QIcon, QFontMetrics, QFont
-from PyQt5.QtWidgets import QWidget, QTableWidgetItem, QListWidgetItem, QTreeView
+from PyQt5.QtGui import QIcon, QFont
+from PyQt5.QtWidgets import QWidget, QTableWidgetItem
 
 from manuskript.functions import mainWindow, writablePath
 from manuskript.ui.exporters.manuskript.plainTextSettings_ui import Ui_exporterSettings
@@ -38,47 +39,20 @@ class exporterSettings(QWidget, Ui_exporterSettings):
         self.chkContentMore.toggled.connect(self.contentTableToggle)
         self.contentTableToggle(False)
 
-        # Labels
-        self.lstContentLabels.clear()
-        h = QFontMetrics(self.font()).height()
-        for i in range(0, self.mw.mdlLabels.rowCount()):
-            item = self.mw.mdlLabels.item(i, 0)
-            if item:
-                item = QListWidgetItem(item.icon(), item.text())
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked)
-                item.setSizeHint(QSize(100, h))
-                self.lstContentLabels.addItem(item)
-
-        self.chkContentLabels.toggled.connect(self.lstContentLabels.setVisible)
-        self.chkContentLabels.toggled.connect(lambda: self.listWidgetAdjustToContent(self.lstContentLabels))
-        self.lstContentLabels.setVisible(False)
-
-        # Status
-        self.lstContentStatus.clear()
-        h = QFontMetrics(self.font()).height()
-        for i in range(0, self.mw.mdlStatus.rowCount()):
-            item = self.mw.mdlStatus.item(i, 0)
-            if item:
-                item = QListWidgetItem(item.icon(), item.text())
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(Qt.Checked)
-                item.setSizeHint(QSize(100, h))
-                self.lstContentStatus.addItem(item)
-
-        self.chkContentStatus.toggled.connect(self.lstContentStatus.setVisible)
-        self.chkContentStatus.toggled.connect(lambda: self.listWidgetAdjustToContent(self.lstContentStatus))
-        self.lstContentStatus.setVisible(False)
-
-        # Root item
-        self.cmbContentParent.setModel(self.mw.mdlOutline)
-        v = QTreeView()
-        self.cmbContentParent.setView(v)
-        v.setHeaderHidden(True)
-        for i in range(1, self.mw.mdlOutline.columnCount()):
-            v.hideColumn(i)
-        self.chkContentParent.toggled.connect(self.cmbContentParent.setVisible)
-        self.cmbContentParent.hide()
+        # The filters "Subitems of", "Labels" and "Status" were never
+        # implemented: the exporters ignore them. They are hidden, with the
+        # note saying so, and their values in exporter.ini are kept as they
+        # are (see getSettings).
+        for widget in [self.chkContentParent, self.cmbContentParent,
+                       self.chkContentLabels, self.lstContentLabels,
+                       self.chkContentStatus, self.lstContentStatus]:
+            widget.hide()
+        # Removes the note from the text as translated, "Filters what items
+        # will be included in the final export.<br/><span ...>(Not fully
+        # implemented yet.)</span>", so that the first sentence stays
+        # translated.
+        self.label_2.setText(re.sub(r"<br\s*/?>\s*<span[^>]*>.*?</span\s*>", "",
+                                    self.label_2.text(), flags=re.DOTALL))
 
         #################################################################
         # Separations
@@ -187,10 +161,8 @@ class exporterSettings(QWidget, Ui_exporterSettings):
                     item.setCheckState(Qt.Checked if s["TextText"][i] else Qt.Unchecked)
 
         self.chkContentIgnoreCompile.setChecked(s["IgnoreCompile"])
-        self.chkContentParent.setChecked(s["Parent"])
-        self.chkContentLabels.setChecked(s["Labels"])
-        self.chkContentStatus.setChecked(s["Status"])
-        # FIXME: parent, labels, status
+        # Parent, Labels and Status: hidden filters (see __init__), their
+        # values stay in self.settings.
 
         # Separations
         s = settings["Separator"]
@@ -258,11 +230,12 @@ class exporterSettings(QWidget, Ui_exporterSettings):
                 s["TextText"].append(self.tblContent.item(2 + row + nLevel, 2).checkState() == Qt.Checked)
 
         s["IgnoreCompile"] = self.chkContentIgnoreCompile.isChecked()
-        s["Parent"] = self.chkContentParent.isChecked()
-        s["Labels"] = self.chkContentLabels.isChecked()
-        s["Status"] = self.chkContentStatus.isChecked()
+        # The hidden filters (see __init__) keep the values that were loaded.
+        # They are still written, unchecked by default as before: other
+        # versions of Manuskript read them from the same exporter.ini.
+        for key in ["Parent", "Labels", "Status"]:
+            s.setdefault(key, False)
         self.settings["Content"] = s
-        # FIXME: parent, labels, status
 
         # Separations
         s = self.settings.get("Separator", {})
@@ -426,12 +399,3 @@ class exporterSettings(QWidget, Ui_exporterSettings):
 
         table.setMinimumSize(QSize(0, h + 2))
         table.setMaximumSize(QSize(16777215, h + 2))
-
-    def listWidgetAdjustToContent(self, lst):
-        """Adjust listWidget to content."""
-        h = 0
-        for i in range(lst.count()):
-            h += lst.item(i).sizeHint().height()
-
-        lst.setMinimumSize(QSize(0, h+2))
-        lst.setMaximumSize(QSize(16777215, h+2))
