@@ -24,10 +24,18 @@ except:
     # Invalid locale, but not really a big deal because it's used only for
     # number formatting
     pass
-import time, os
+import time, os, uuid
 
 import logging
 LOGGER = logging.getLogger(__name__)
+
+# Item XML contains all texts and revisions (of children too), so it can easily
+# exceed libxml2's default limits (10 MB).
+_parser = ET.XMLParser(huge_tree=True)
+
+# Marks Manuskript's own drag and drop / copy data (application/xml can come
+# from any application). Its value identifies the model that made the data.
+_modelMimeType = "application/x-manuskript-model"
 
 
 class abstractModel(QAbstractItemModel):
@@ -52,6 +60,7 @@ class abstractModel(QAbstractItemModel):
         # Stores removed item, in order to remove them on disk when saving, depending on the file format.
         self.removed = []
         self._removingRows = False
+        self._mimeModelID = uuid.uuid4().hex.encode()
 
     def requestNewID(self):
         newID = self.nextAvailableID
@@ -291,12 +300,13 @@ class abstractModel(QAbstractItemModel):
 
         for index in indexes:
             if index.isValid() and index.column() == 0:
-                item = ET.XML(index.internalPointer().toXML())
+                item = ET.XML(index.internalPointer().toXML(), _parser)
                 root.append(item)
 
         encodedData = ET.tostring(root)
 
         mimeData.setData("application/xml", encodedData)
+        mimeData.setData(_modelMimeType, self._mimeModelID)
         return mimeData
 
     def supportedDropActions(self):
@@ -351,10 +361,18 @@ class abstractModel(QAbstractItemModel):
         return False
 
     def decodeMimeData(self, data):
-        if not data.hasFormat("application/xml"):
+        if data is None or not data.hasFormat("application/xml"):
             return None
-        encodedData = bytes(data.data("application/xml")).decode()
-        root = ET.XML(encodedData)
+        encodedData = bytes(data.data("application/xml"))
+        # Data from other applications is parsed with libxml2's default limits
+        # (with huge_tree, older libxml2 versions also skip their checks on
+        # entity expansion).
+        parser = _parser if data.hasFormat(_modelMimeType) else None
+        try:
+            root = ET.XML(encodedData, parser)
+        except ET.XMLSyntaxError:
+            # Not ours: 'application/xml' can come from any application.
+            return None
         if root is None:
             return None
 
@@ -400,6 +418,10 @@ class abstractModel(QAbstractItemModel):
 
         return items
 
+    def isOwnMimeData(self, data):
+        """Returns True if data was made by this model's mimeData()."""
+        return bytes(data.data(_modelMimeType)) == self._mimeModelID
+
     def dropMimeData(self, data, action, row, column, parent):
 
         if action == Qt.IgnoreAction:
@@ -421,12 +443,17 @@ class abstractModel(QAbstractItemModel):
         if column > 0:
             column = 0
 
+        # rowCount() is 0 for the other columns (e.g. dropped or pasted on the
+        # POV cell of a folder in the outline view)
+        if parent.isValid() and parent.column() != 0:
+            parent = parent.sibling(parent.row(), 0)
+
         if row != -1:
             beginRow = row
         elif parent.isValid():
-            beginRow = self.rowCount(parent) + 1
+            beginRow = self.rowCount(parent)
         else:
-            beginRow = self.rowCount() + 1
+            beginRow = self.rowCount()
 
         if action == Qt.CopyAction:
             # Behavior if parent is a text item
@@ -449,30 +476,36 @@ class abstractModel(QAbstractItemModel):
         # In case of copy actions, items might be duplicates, so we need new IDs.
         # But they might not be, if we cut, then paste. Paste is a Copy Action.
         # The first paste would not need new IDs. But subsequent ones will.
+        # Items moved from another model (e.g. from another Manuskript window)
+        # can have used IDs too. Moved within this model, they keep their IDs:
+        # Qt removes the original items after the drop.
 
-        # Recursively change the existing IDs to new, unique values. No need to strip out the old
-        # even if they are not duplicated in pasting. There is no practical need for ID conservation.
+        # Recursively check every copied item (children too, their IDs can be
+        # used even if their parent's ID is not), and change the IDs that are
+        # already used to new, unique values.
 
-        if action == Qt.CopyAction:
-            IDs = self.rootItem.listAllIDs()
+        if action == Qt.CopyAction or not self.isOwnMimeData(data):
+            IDs = set(self.rootItem.listAllIDs())
+
+            def removeUsedIDs(i):
+                if i.ID() in IDs:
+                    # Items don't get new IDs, because they are not part of a model yet,
+                    # so i.getUniqueID() would do nothing.
+                    # Instead we remove the ID, so that the item will receive a new one
+                    # when inserted within the model.
+                    i.setData(i.enum.ID, None)
+                    # Duplicates have no file on disk yet, so they must not keep the
+                    # original's lastPath (used by loadSave version_1).
+                    i._lastPath = ""
+                elif i.ID():
+                    IDs.add(i.ID())
+                    # Reserve the ID, so that it is not given to another copied item
+                    self.updateAvailableIDs(i.ID())
+                for c in i.children():
+                    removeUsedIDs(c)
 
             for item in items:
-                if item.ID() in IDs:
-                    # Items don't get new IDs, because they are not part of a model yet,
-                    # so the following call does nothing:
-                    # item.getUniqueID(recursive=True)
-
-                    # Instead we need to remove IDs (recursively) in all copied items, so that they
-                    # will receive new ones when inserted within the model.
-                    def removeIDs(i):
-                        i.setData(item.enum.ID, None)
-                        # Duplicates have no file on disk yet, so they must not keep the
-                        # original's lastPath (used by loadSave version_1).
-                        i._lastPath = ""
-                        for c in i.children():
-                            removeIDs(c)
-
-                    removeIDs(item)
+                removeUsedIDs(item)
 
         r = self.insertItems(items, beginRow, parent)
         return r
@@ -496,6 +529,7 @@ class abstractModel(QAbstractItemModel):
 
         # Insert only if parent is folder
         if parentItem.isFolder():
+            row = max(0, min(row, parentItem.childCount()))
             self.beginInsertRows(parent, row, row + len(items) - 1) # Create space.
 
             for i in items:
@@ -527,6 +561,39 @@ class abstractModel(QAbstractItemModel):
         # If parent is not folder, write next to
         else:
             self.insertItem(item, parent.row() + 1, parent.parent())
+
+    def moveItemRow(self, row, delta, parent=QModelIndex()):
+        """
+        Moves the item at `row` in `parent` by `delta` rows (-1: up, +1: down).
+        Returns False if it can't be moved.
+        """
+        if not parent.isValid():
+            parentItem = self.rootItem
+        else:
+            parentItem = parent.internalPointer()
+
+        if not parentItem:
+            return False
+
+        if parent.isValid() and parent.column() != 0:
+            parent = parentItem.index()
+
+        newRow = row + delta
+        if not 0 <= row < parentItem.childCount() or \
+           not 0 <= newRow < parentItem.childCount():
+            return False
+
+        # Qt wants the destination row as numbered before the move
+        destination = newRow + 1 if delta > 0 else newRow
+        if not self.beginMoveRows(parent, row, row, parent, destination):
+            return False
+
+        parentItem.childItems.insert(newRow, parentItem.childItems.pop(row))
+        self.endMoveRows()
+
+        # Emits dataChanged, which also marks the project as modified
+        parentItem.updateWordCount()
+        return True
 
     def removeIndex(self, index):
         item = index.internalPointer()

@@ -326,7 +326,7 @@ class abstractItem():
         return item
 
     def setFromXML(self, xml):
-        root = ET.XML(xml)
+        root = ET.XML(xml, self._parser)
 
         for k in self.enum:
             if k.name in root.attrib:

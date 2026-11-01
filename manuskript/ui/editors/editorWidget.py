@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
-from PyQt5.QtCore import pyqtSignal, QModelIndex
+from PyQt5.QtCore import pyqtSignal, QModelIndex, QPersistentModelIndex
 from PyQt5.QtGui import QPalette
 from PyQt5.QtWidgets import QWidget, QFrame, QSpacerItem, QSizePolicy
 from PyQt5.QtWidgets import QVBoxLayout, qApp, QStyle
@@ -69,6 +69,18 @@ class editorWidget(QWidget, Ui_editorWidget_ui):
         # def setModel(self, model):
         # self._model = model
         # self.setView()
+
+    @property
+    def currentIndex(self):
+        return QModelIndex(self._currentIndex)
+
+    @currentIndex.setter
+    def currentIndex(self, index):
+        # Stored as a persistent index, so that its row stays correct when
+        # rows are inserted or removed before it (drag and drop, etc.).
+        if index is None:
+            index = QModelIndex()
+        self._currentIndex = QPersistentModelIndex(index)
 
     def resizeEvent(self, event):
         """
@@ -351,7 +363,12 @@ class editorWidget(QWidget, Ui_editorWidget_ui):
         # so there is no need to call updateIndexFromID() nor setView().
         if topLeft.row() <= self.currentIndex.row() <= bottomRight.row():
             self.updateTabTitle()
-            self.updateStatusBar()
+            # Only update the stats. updateStatusBar() would call
+            # mainEditor.tabChanged(), which resets the selection of the main
+            # tree view. During a drag and drop, Qt then removes the wrong rows.
+            mw = mainWindow()
+            if mw:
+                mw.mainEditor.updateStats()
 
     def rowsAboutToBeRemoved(self, parent, first, last):
         if not self.currentIndex.isValid():

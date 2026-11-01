@@ -145,8 +145,20 @@ class mainEditor(QWidget, Ui_mainEditor):
         if not index.isValid():
             return
 
+        tree = self.mw.treeRedacOutline
+        if tree.currentIndex() == index or tree.selectionModel().isSelected(index):
+            # Keep the user's (multi-)selection
+            return
+
         self._updating = True
-        self.mw.treeRedacOutline.setCurrentIndex(index)
+        # tree.setCurrentIndex() (unlike its selection model's) also makes
+        # index the start of Shift+click ranges. In ExtendedSelection mode, it
+        # selects depending on the keyboard modifiers that are still held
+        # (ctrl+click: Toggle). In SingleSelection mode, it selects only index.
+        mode = tree.selectionMode()
+        tree.setSelectionMode(tree.SingleSelection)
+        tree.setCurrentIndex(index)
+        tree.setSelectionMode(mode)
         self._updating = False
 
     def closeAllTabs(self):

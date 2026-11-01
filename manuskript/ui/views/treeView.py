@@ -31,13 +31,14 @@ class treeView(QTreeView, dndView, outlineBasics):
         self.titleDelegate = treeTitleDelegate()
         self.setItemDelegateForColumn(Outline.title, self.titleDelegate)
 
-    def makePopupMenu(self):
-        menu = outlineBasics.makePopupMenu(self)
+    def makePopupMenu(self, pos=None):
+        if pos is None:
+            pos = self.viewport().mapFromGlobal(QCursor.pos())
+        menu = outlineBasics.makePopupMenu(self, pos)
         first = menu.actions()[3]
 
         # Open item in new tab
         #sel = self.selectedIndexes()
-        pos = self.viewport().mapFromGlobal(QCursor.pos())
         mouseIndex = self.indexAt(pos)
 
         # Expand /collapse item
@@ -93,8 +94,10 @@ class treeView(QTreeView, dndView, outlineBasics):
     def mousePressEvent(self, event):
         # Prevent selecting item while right-clicking for popup menu!
         if event.button() != Qt.RightButton:
+            # Not outlineBasics.mousePressEvent: it does not exist, so it would
+            # call QAbstractItemView.mousePressEvent a second time (toggling
+            # ctrl+clicked items twice).
             QTreeView.mousePressEvent(self, event)
-            outlineBasics.mousePressEvent(self, event)
 
     def mouseReleaseEvent(self, event):
         QTreeView.mouseReleaseEvent(self, event)
