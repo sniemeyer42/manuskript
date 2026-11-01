@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
-from PyQt5.QtCore import pyqtSignal, QModelIndex, QPersistentModelIndex
+from PyQt5.QtCore import pyqtSignal, QModelIndex, QPersistentModelIndex, Qt
 from PyQt5.QtGui import QPalette
 from PyQt5.QtWidgets import QWidget, QFrame, QSpacerItem, QSizePolicy
 from PyQt5.QtWidgets import QVBoxLayout, qApp, QStyle
@@ -64,6 +64,11 @@ class editorWidget(QWidget, Ui_editorWidget_ui):
         # Capture textEdit scrollbar, so that we can put it outside the margins.
         self.txtEditScrollBar = self.txtRedacText.verticalScrollBar()
         self.txtEditScrollBar.setParent(self)
+        # The text edit must not show a scroll bar that is no longer inside
+        # it: some styles (Breeze, Adwaita-qt) map positions from a scroll
+        # area to its scroll bars and crash on one placed elsewhere (#450,
+        # #601, #1435). The bar keeps following the text.
+        self.txtRedacText.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.stack.currentChanged.connect(self.setScrollBarVisibility)
 
         # def setModel(self, model):
