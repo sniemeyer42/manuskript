@@ -155,3 +155,16 @@ def test_markdownHeadersCRLF(runImporter):
         ("Chapter 2", "md", "```\n# not a header\n```"),
         ("Scene 1", "md", "End."),
     ]
+
+
+def test_folderImportSkipsHiddenEntries(runImporter, tmp_path):
+    folder = tmp_path / "notes"
+    for d in ["Chapter 1", ".git/objects/ab", ".obsidian"]:
+        (folder / d).mkdir(parents=True)
+    (folder / "Chapter 1" / "Scene 1.md").write_text("Text.\n")
+    (folder / ".git" / "objects" / "ab" / "description.txt").write_text("git\n")
+    (folder / ".obsidian" / "notes.md").write_text("obsidian\n")
+    (folder / ".hidden.md").write_text("hidden\n")
+    items = runImporter(folderImporter, str(folder))
+    assert [(i.title(), i.type()) for i in items] == [
+        ("Chapter 1", "folder"), ("Scene 1", "md")]

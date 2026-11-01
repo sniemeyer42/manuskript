@@ -39,6 +39,10 @@ class folderImporter(abstractImporter):
 
         for dirpath, dirnames, filenames in os.walk(filePath):
 
+            # Skip hidden folders and files (.git, .obsidian, .stversions...)
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            filenames = [f for f in filenames if not f.startswith(".")]
+
             if dirpath in stack:
                 item = stack[dirpath]
             else:
