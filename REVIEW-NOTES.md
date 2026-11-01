@@ -1,27 +1,38 @@
 # Manuskript: bug-fix branches, open problems and code-quality review
 
-*Discussion paper for the Manuskript maintainers, written November 2026. The fix branches (`fix/*` and `fix/all-quickfixes`) are to be published in the fork [sniemeyer42/manuskript](https://github.com/sniemeyer42/manuskript). At the time of writing they exist only locally. All branches are based on `develop` at `01e0574` (2026-09-02).*
+*Discussion paper for the Manuskript maintainers, written November 2026. The fix branches (`fix/*` and `fix/all-quickfixes`) are in the fork [sniemeyer42/manuskript](https://github.com/sniemeyer42/manuskript). At the time of writing, `fix/review-findings` and the latest commits of `fix/spellcheck` and `fix/all-quickfixes` (D5, and the merges of both branches) had not been pushed there yet. All branches are based on `develop` at `01e0574` (2026-09-02), except `fix/review-findings`, which builds on `fix/all-quickfixes` (see section 1).*
 
 ## TL;DR
 
 - On `develop`, folder-mode projects can **lose text**, often silently. This happens when items with similar titles are reordered or moved, when the editor tree is used for drag and drop, and when a save or load fails. Duplicating a folder, or moving "Chapter 10" above "Chapter 1", makes every later save crash. Any uncaught exception closes the app without saving. These bugs explain several upstream data-loss reports (e.g. #719, #1306, #1320). They are the biggest risk for people who write real projects in Manuskript, and they can be fixed without changing its concept or file format.
-- Seven fix branches (84 small commits) address many data-loss, crash, performance and usability bugs. Together they reference 36 upstream issues, several of them long-standing. `fix/all-quickfixes` combines all seven. The test suite grows **from 39 to 412 tests**.
+- Eight fix branches (91 small commits) address many data-loss, crash, performance and usability bugs. Together they reference 39 upstream issues, several of them long-standing. `fix/all-quickfixes` combines all eight. The test suite grows **from 39 to 630 tests**.
+- The data-loss bugs found while writing the first version of this document (A1–A5), the scroll-bar segfault (B2) and a spell-check regression on one of the branches (D5) are fixed too, on `fix/review-findings` and `fix/spellcheck`.
 - Some problems are still open. Section 2 lists each with an effort estimate. The most important:
   - the fail-fast excepthook (B1),
-  - data-loss bugs found during this review that also exist on `develop` (A1–A3),
-  - a scroll-bar segfault with some Qt styles (B2),
-  - damaged project files that keep a whole project from opening (B3).
+  - damaged project files that keep a whole project from opening (B3),
+  - two crashes found during the last fix round (A6, A8),
+  - a manual check of the scroll-bar fix with the Breeze and Adwaita-qt styles (B2).
+- **All code and text were written by an AI model** (Claude), directed by the fork owner but not reviewed line by line by a human. See below.
 - Section 3 is a code-quality assessment with incremental proposals. Section 4 collects the questions maintainers need to decide.
 
 ## How this was produced
 
-This work was done with an AI coding assistant (Claude Code), under the direction of the fork owner. It is disclosed here so the maintainers can review it with that in mind.
+**Who wrote this.** The code, the tests, the commit messages and this document were written by Claude, an AI model made by Anthropic, working in Claude Code. The fork owner (sniemeyer42) started the work, set its scope, and approved the proposals in it, but did not write the code and has not reviewed it line by line: at the pace it was produced, that was not possible. The commits name the fork owner as author because they come from the fork, and each one carries a `Co-Authored-By: Claude` trailer.
+
+Please review the branches as you would review a large contribution from a new contributor that no human has checked yet. The tests and the adversarial reviews described below lower the risk, but they do not replace a review by someone who knows the code base.
+
+How the work was done:
 
 1. **Scan.** Parallel reviewers each took one subsystem (load/save, models/DnD, editors, spellcheck, import/export, UI/settings, app shell, Python compatibility, runtime behaviour). They reported 127 bugs (18 data loss, 32 crashes, 47 wrong behaviour, 30 minor) and checked them against the upstream issue tracker. 123 of them were reproduced with small scripts before any fix was written.
 2. **Fix.** One branch per area. Each commit adds tests. For bug fixes, the new test reproduces the bug on `develop` and passes on the branch. Performance commits add tests that check the output is unchanged.
 3. **Review.** Three rounds of adversarial review, in which independent reviewers tried to break each fix. Most of what they found was fixed. The rest is listed as trade-offs in 1.4 and as open problems in section 2. The folder-mode save path was also fuzzed with random edit sequences plus injected write and read errors: 61 seeds, no data loss. The fuzzer is not on the branches yet (see 3.4, item 15).
 4. **This document.** The analysis was fact-checked against the code and git history by separate reviewers, who also reproduced the newly found bugs (A1–A5) with their own scripts.
-5. **Not done yet.** No manual testing on Windows or macOS, no test under a real X server (only `offscreen`), and no review by a human Manuskript developer. Please treat the branches as well-tested proposals, not as finished work.
+5. **Follow-up round.** A1–A5, B2 and D5 were then fixed the same way: one commit per item, each with a regression test that fails without the fix, then two rounds of adversarial review. Both rounds found real problems in two of the fixes, and both fixes were reworked each time:
+   - The D5 fix first accepted wrong elisions such as `un’amico` and `l’chat`, and changed what Hunspell dictionaries report. After the first rework it accepted missing-accent typos such as `jusqu’a` and `dov’e`.
+   - The A4 fix first did not restore everything after a failed "Save as…". After the first rework it wrote no copy when the target was a link to the project file.
+
+   The last rework of these two fixes was checked with the reviewers' scripts and the full test suite, but not reviewed a third time. Problems found along the way that the fixes did not cause are listed as new open items (A6–A8, D6).
+6. **Not done yet.** No manual testing on Windows or macOS, no test under a real X server (only `offscreen`), and no review by a human: neither by a Manuskript developer nor by the fork owner. Please treat the branches as well-tested proposals, not as finished work.
 
 ## Contents
 
@@ -33,7 +44,7 @@ This work was done with an AI coding assistant (Claude Code), under the directio
 
 ## 1. Changes compared to `develop`
 
-All branches start from `develop` at `01e0574` ("Merge pull request #1439 …", 2026-09-02). Each branch can be merged on its own. `fix/all-quickfixes` merges all seven, one after another, with `--no-ff`.
+All branches start from `develop` at `01e0574` ("Merge pull request #1439 …", 2026-09-02). Each of the first seven branches can be merged on its own. `fix/review-findings` is different: it was written on top of `fix/all-quickfixes` at `eacaf8f` and uses code from several branches (`submitPendingChanges()` from `fix/editor-performance`, the save cache and the atomic `writeFile` from `fix/save-load-data-loss`, and their test helpers). It has to be merged last. `fix/all-quickfixes` merges all eight, one after another, with `--no-ff`. `fix/spellcheck` is merged twice: the second merge brings in D5 (`92bee56`), after `fix/ui-settings-search`.
 
 ### 1.1 Overview
 
@@ -44,14 +55,18 @@ All branches start from `develop` at `01e0574` ("Merge pull request #1439 …", 
 | `fix/outline-dnd` | 9 | 11 | +962 / −101 | 72 (+33) | #324 #719 #918 #1193 #1216 #1264 #1286 #1394 |
 | `fix/editor-performance` | 9 | 8 | +961 / −64 | 119 (+80) | #661 #819 #963 #1286 #1376 #1393 |
 | `fix/import-export` | 17 | 25 | +1151 / −101 | 94 (+55) | #351 (rel.) #694 #929 (rel.) #978 #1178 #1215 |
-| `fix/spellcheck` | 13 | 5 | +1186 / −127 | 128 (+89) | #929 #1178 |
+| `fix/spellcheck` | 14 | 5 | +1669 / −127 | 274 (+235) | #929 #1178 |
 | `fix/ui-settings-search` | 15 | 23 | +1061 / −91 | 81 (+42) | #467 #997 #1127 #1220 #1228 #1421 #1449 |
+| `fix/review-findings` ¹ | 6 | 16 | +1644 / −37 | 484 (+72) | #450 #601 #1435 |
 
-The integrated branch `fix/all-quickfixes` changes 95 files (+8140 / −704 lines: about 6000 of the added lines are tests, about 2160 are production code). Its suite has **412 tests** (39 on `develop`), and all of them pass. Each commit on the seven fix branches passes the full test suite on its own. The merge conflicts were all small:
+¹ Counted against `fix/all-quickfixes` at `eacaf8f` (412 tests), not against `develop`.
+
+The integrated branch `fix/all-quickfixes` changes 101 files (+10256 / −730 lines: about 7760 of the added lines are tests, about 2500 are production code). Its suite has **630 tests** (39 on `develop`), and all of them pass (8 only run when optional spell-check backends or dictionaries are installed, see appendix A). Each commit on the eight fix branches passes the full test suite on its own. The merge conflicts were all small:
 
 - `abstractModel.py`: keep outline-dnd's `removeUsedIDs` and also reset `_lastPath` (from save-load) when an item gets a new ID.
 - `main.py`: two imports.
 - Four test files that both sides had added to.
+- `spellchecker.py`: one import line (`unicodedata` for D5, `zlib` for A5).
 
 Tests ran with `QT_QPA_PLATFORM=offscreen` on two setups:
 
@@ -127,7 +142,8 @@ Thread exceptions and Qt messages are now logged at the right level. SIGTERM/SIG
 - The default dictionary is now one that is installed.
 - Dictionary menu actions no longer pile up.
 - LanguageTool is no longer started just to build the menu.
-- Correct words around apostrophes are no longer underlined: closing quotes and plural possessives (`dogs'`), typographic apostrophes (`isn’t`), and contractions with a known clitic (`geht's`). Partial non-ASCII words are no longer checked while typing (`Grüße` checked as `Grü`). This is the spellcheck part of #929. See BC10 and **D5** for a possible regression with French elisions.
+- Correct words around apostrophes are no longer underlined: closing quotes and plural possessives (`dogs'`), typographic apostrophes (`isn’t`), and contractions with a known clitic (`geht's`). Partial non-ASCII words are no longer checked while typing (`Grüße` checked as `Grü`). This is the spellcheck part of #929 (BC10).
+- French, Italian and Catalan elisions (`l’homme`, `qu’il`, `bell’aspetto`) are accepted with the word-list backends (pyspellchecker, symspellpy; Catalan only with a word list of one's own). With `’`, `develop` accepted most of them by splitting the word at `’`; `fa37b1e` broke that (D5). enchant checks the whole elided form, as since `fa37b1e` (BC21).
 - No suggestion menu for multi-word selections.
 - The colour setting is now applied.
 
@@ -143,6 +159,15 @@ Thread exceptions and Qt messages are now logged at the right level. SIGTERM/SIG
 - `--style` to get past a broken saved style (#467).
 - Tooltip colours, the autosave toggle, the theme editor, duplicate recent files (#1228), side-panel visibility.
 - A clear message for Python < 3.6 (#1421).
+
+**`fix/review-findings`** fixes A1–A5 from section 2, which were found while writing the first version of this document, and the known scroll-bar segfault B2 (#450 #601 #1435). All of them also exist on `develop`:
+
+- Outline tab with several items selected: clicking into the "Various" summary field and out again, or toggling spellcheck, erased the summaries of all selected items (A1).
+- Split at cursor (Ctrl+K) right after typing lost the text typed last and cut at the wrong place (A2).
+- The main editor no longer lets its text area show the scroll bar that was moved out of it. Some styles are reported to crash on that (B2). Still needs a manual check with Breeze5 and Adwaita-qt.
+- Adding or removing characters, plots, world items, labels or statuses marks the project as modified, so File > Close saves the change or asks first. Before, it was dropped (A3).
+- A failed "Save as…" leaves the project where it was and tells the user why. "Save as…" into the project's own folder no longer deletes files that could not be read when loading (A4).
+- Loading a dictionary no longer rewrites the custom-word file, and a damaged file is kept as `.damaged` instead of being emptied (A5).
 
 ### 1.3 Commits per branch
 
@@ -244,6 +269,7 @@ Thread exceptions and Qt messages are now logged at the right level. SIGTERM/SIG
 | `fa37b1e` | **spellcheck:** stop underlining correct words around apostrophes | #929 |
 | `91296a3` | **spellcheck:** no spelling menu for multi-word selections |  |
 | `042a844` | **spellcheck:** use the misspelled-word color setting |  |
+| `92bee56` | **spellcheck:** accept French, Italian and Catalan elisions (D5) |  |
 
 #### `fix/ui-settings-search`
 
@@ -265,6 +291,17 @@ Thread exceptions and Qt messages are now logged at the right level. SIGTERM/SIG
 | `4d08e74` | **ui:** keep side panel visibility after a UI language change |  |
 | `d183c70` | **startup:** explain that Python 3.6 or newer is required | #1421 |
 
+#### `fix/review-findings` (based on `eacaf8f`)
+
+| Commit | Change | Upstream |
+|---|---|---|
+| `2a53412` | **editor:** keep the summaries of several selected outline items (A1) |  |
+| `1765c09` | **editor:** split at the cursor including the text just typed (A2) |  |
+| `07dce72` | **editor:** do not let the text edit show its moved scroll bar (B2) | #450, #601, #1435 |
+| `2f348bd` | **ui:** mark the project modified when rows are added or removed (A3) |  |
+| `9b9e2fa` | **ui:** keep the project where it was when "Save as..." fails (A4) |  |
+| `0c13f97` | **spellcheck:** do not rewrite or empty the custom dictionary on load (A5) |  |
+
 ### 1.4 Behaviour changes that need a maintainer's OK
 
 These are intentional, but they change what users see or how files are written. They should be discussed before merging.
@@ -280,24 +317,30 @@ These are intentional, but they change what users see or how files are written. 
 | BC7 | save-load | Clicking a demo project opens a **copy in the user data folder**. | Edits were written into the installed sample, or lost on a read-only install. |
 | BC8 | save-load | If saving fails when the user closes or quits, Manuskript **asks before discarding** unsaved changes. | Before, the window just closed and the changes were lost. |
 | BC9 | spellcheck | LanguageTool dictionaries are listed only after the new menu entry **"Start LanguageTool to list its dictionaries"** has been used, unless the project's dictionary is a LanguageTool one (then LT starts on load). Starting blocks the UI, and the first start downloads about 250 MB. The new strings are untranslated. | Building the menu started a JVM (and possibly the download) on every project load. |
-| BC10 | spellcheck | A word with apostrophes is accepted if the dictionary knows it (`’` is also read as `'`), after quotes and plural-possessive apostrophes around it are stripped. It is also accepted if it is a known word followed by one of the clitics `'s 'n 'm 'ne 'nen 'nem`, the same list for every language. Words are no longer split at apostrophes, so French elisions (`l’homme`) are accepted only if the dictionary knows the whole form (see **D5**). | False positives with possessives, quotes and contractions (#929). |
+| BC10 | spellcheck | A word with apostrophes is accepted if the dictionary knows it (`’` is also read as `'`), after quotes and plural-possessive apostrophes around it are stripped. It is also accepted if it is a known word followed by one of the clitics `'s 'n 'm 'ne 'nen 'nem`, the same list for every language. Words are no longer split at apostrophes. For the word-list backends, elisions (`l’homme`) are handled separately, see BC21. | False positives with possessives, quotes and contractions (#929). |
 | BC11 | outline-dnd | Right-clicking an item outside the selection makes the context menu act **on that item, without changing the selection**. | Before, the menu acted on the old selection (#1286). |
 | BC12 | import-export | Markdown import treats `#` lines as headers in fewer cases. These are no longer headers: lines in closed ```` ``` ```` code fences, scene breaks made only of `# * - _` (`#`, `# # #`), and lines with 7 or more `#`. Closing hashes need a space before them (`# C#` keeps its title). `#Title` without a space is still a header. `~~~` lines are not treated as fences on purpose, because they are common scene breaks. | Scene breaks became items titled "#" and moved the following scenes out of their chapter. |
 | BC13 | editor-perf | A line that is only a list marker that cannot be incremented (`-- `, `ii. `) ends the list on Return, like `- ` does, and is cleared. | Side effect of `51040cf`: markers that cannot be incremented no longer match the continuation regex, so such a line counts as an empty item. See C5 if `-- ` should be kept. |
 | BC14 | crashes | SIGTERM/SIGINT now close Manuskript normally: the handler runs within 0.5 s, then the usual close with save on quit. If save on quit is off and there are unsaved changes, the "Save project?" question still waits for an answer (B8). | Before, they were ignored until SIGKILL, so changes were lost on logout. |
 | BC15 | ui-settings | New command-line option `--style STYLE`, which also accepts Qt's `-style`. It is not saved. `QT_STYLE_OVERRIDE` is still ignored on purpose. | A crashing saved style made Manuskript unusable (#467). |
+| BC16 | review-findings | Outline tab with several items selected: the "Various" full-summary field writes only after a real edit. Differing summaries can no longer be emptied in one step; that now takes two (type something and let it be written, then delete it). | Focus-out or a rehighlight erased all selected summaries (A1). |
+| BC17 | review-findings | Adding or removing characters, character info, plots, plot steps, world items, labels or statuses **marks the project modified** and starts the "autosave if no changes" timer. File > Close saves the change, or asks first when "save on quit" is off. | These changes were dropped on close (A3). |
+| BC18 | review-findings | A failed "Save as…" keeps the old path, window title and recent files. A read-only target gets a warning before anything is written. A failed save in single-file (`.msk`) mode shows the "Files not saved" dialog; before, only the status bar said so. "Save as…" into the project's own folder (its own file, or a file whose folder links to it) keeps what the save code knows about that folder, so it no longer removes the folder's files first. | The app switched to a path where nothing had been saved (A4). |
+| BC19 | review-findings | The custom-word file is no longer rewritten on load. It is written atomically and sorted. A damaged or unreadable file is moved to `<name>.json.gz.damaged` and the words start empty. A transient read error moves it aside too. | Custom words were lost (A5). |
+| BC20 | review-findings | Once the text is longer than the window, the main editor's text area keeps its full width (10 px wider than before). Where the text area reaches the editor's right edge ("Max width" 0, or an editor narrower than "Max width"), the transparent scroll bar covers its last 9 px, as it already did for short texts. | Some styles crashed on the scroll bar (B2). |
+| BC21 | spellcheck | With pyspellchecker or symspellpy and a French, Italian or Catalan dictionary, an elision from a per-language list (`l`, `qu`, `dell`…), followed by `'` or `’` and a known word that starts with a vowel, `h`, `y` or a digit, is accepted. Where the word needs an accent after the elision, the accent is required (`jusqu’à`, `d’où`, `dov’è`; `jusqu’a` is underlined and `jusqu’à` suggested). With these word lists, some wrong forms are accepted (h aspiré `l’héros`, Italian plurals `l’amici`), and some correct ones are underlined (colloquial `j’suis`; Italian `un’estate`, which `develop` accepted with `’`). enchant checks the whole elided form, as since `fa37b1e` (`develop` split at `’` for every backend). | Since `fa37b1e`, most elisions were underlined with these backends (D5). The lists need a review by native speakers (Q22). |
 
-The new user-visible strings use `tr()`/`safeTranslate()` (21 strings), but **no `.ts` files have been updated** (G3).
+The new user-visible strings use `tr()`/`safeTranslate()` (23 strings), but **no `.ts` files have been updated** (G3).
 
 ### 1.5 Suggested merge plan
 
-1. **One PR per branch**, in this order: `save-load-data-loss` → `crashes` → `outline-dnd` → `editor-performance` → `import-export` → `spellcheck` → `ui-settings-search`. That is the order of `fix/all-quickfixes`, so the conflict resolutions shown there can be reused.
-2. Each commit fixes one problem. One exception: `638be4a` also carries a small focus-mode fix that the bug it fixes had been hiding. Each message explains the bug, the root cause and the fix, and names the upstream issues where there are any. Reviewers can review commit by commit, or cherry-pick single commits.
+1. **One PR per branch**, in this order: `save-load-data-loss` → `crashes` → `outline-dnd` → `editor-performance` → `import-export` → `spellcheck` → `ui-settings-search` → `review-findings`. That is the order of `fix/all-quickfixes` (where `fix/spellcheck` is merged a second time for D5), so the conflict resolutions shown there can be reused. `review-findings` needs all the others first.
+2. Each commit fixes one problem, with three exceptions: `638be4a` also carries a small focus-mode fix that the bug it fixes had been hiding; `9b9e2fa` (A4) also fixes two related "Save as…" cases; `2f348bd` (A3) also disconnects the old `dataChanged` connections on close. Each message explains the bug, the root cause and the fix, and names the upstream issues where there are any. Reviewers can review commit by commit, or cherry-pick single commits.
 3. Before opening the PRs, run the repository's own CI on the branches (see G2). Before releasing, test by hand with a copy of a real project, on Windows and macOS in particular: case-insensitive file systems, path length, `os.replace` over open files on Windows. These were only covered by tests on Linux.
 
 ## 2. Open problems and effort
 
-Everything in this section is **still present on `fix/all-quickfixes`**. Each item was checked against the code, most of them with a small isolated script. File and line references are to `fix/all-quickfixes` (`eacaf8f`).
+Items marked ✅ were fixed after the first version of this document: D5 on `fix/spellcheck`, the others on `fix/review-findings`. They stay in the lists so that their IDs remain stable. Everything else is **still present on `fix/all-quickfixes`**. Each item was checked against the code, most of them with a small isolated script. File and line references are to `fix/all-quickfixes` at `eacaf8f`, before these fixes.
 
 **Effort** assumes one developer who knows Python/Qt but is new to this code base, and includes tests: **S** ≤ ½ day, **M** 1–3 days, **L** 1–2 weeks, **XL** > 2 weeks or architectural. **Decision** (✋) means maintainers should agree on the behaviour before someone writes the fix (see section 4).
 
@@ -305,15 +348,18 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 
 | ID | Problem | Impact | Effort | Prio | ✋ |
 |---|---|---|:-:|:-:|:-:|
-| **A — Newly found during this review (all also present on `develop`), mostly quick to fix** ||||||
-| A1 | Outline tab, multi-selection: the "Various" summary field writes `""` into every selected item | **Silent data loss** | S | high | ✋ |
-| A2 | Split at cursor (Ctrl+K) right after typing loses the last typed text and cuts at the wrong place | Data loss | S | high | |
-| A3 | Adding or removing characters, plots, world items, labels or statuses does not mark the project as modified. An added entry that is then edited does, so what gets lost is removals and unedited additions. | File > Close drops them, no prompt | M | high | ✋ |
-| A4 | A failed "Save as…" still switches the app to the new, unsaved path | Work "saved" nowhere | S | medium | |
-| A5 | The custom dictionary file is rewritten non-atomically each time it is loaded (if it holds any word), and emptied if it is damaged | Lost custom words | S | medium | |
+| **A — Newly found during this review (all also present on `develop`)** ||||||
+| A1 | ✅ `2a53412` Outline tab, multi-selection: the "Various" summary field writes `""` into every selected item | Silent data loss | — | — | ✋ |
+| A2 | ✅ `1765c09` Split at cursor (Ctrl+K) right after typing loses the last typed text and cuts at the wrong place | Data loss | — | — | |
+| A3 | ✅ `2f348bd` Adding or removing characters, plots, world items, labels or statuses does not mark the project as modified. An added entry that is then edited does, so what gets lost is removals and unedited additions. | File > Close drops them, no prompt | — | — | ✋ |
+| A4 | ✅ `9b9e2fa` A failed "Save as…" still switches the app to the new, unsaved path | Work "saved" nowhere | — | — | |
+| A5 | ✅ `0c13f97` The custom dictionary file is rewritten non-atomically each time it is loaded (if it holds any word), and emptied if it is damaged | Lost custom words | — | — | |
+| A6 | Outline tab: if the first selection is already a multi-selection (e.g. Ctrl+A), the first key typed into the full summary raises `AttributeError` and the app exits | Crash, unsaved work lost | S | high | |
+| A7 | Browsing plot steps, or switching tabs in a new project made from a template, marks the project modified without an edit | Needless "Save?" prompt and autosave | S | low | |
+| A8 | Segfault when a project is closed and another one is opened in the same event-loop pass, after an editor tab showed a folder in "outline" view | Crash; not known whether the app reaches it | S–M | medium | |
 | **B — Robustness and data safety (known)** ||||||
 | B1 | Global excepthook calls `sys.exit(1)` on any uncaught exception | Every small bug = crash + lost work | M | **highest** | ✋ |
-| B2 | Main editor reparents its scroll bar without `ScrollBarAlwaysOff` (#450 #601 #1435) | Segfault with Breeze5/Adwaita | S | high | |
+| B2 | ✅ `07dce72` Main editor reparents its scroll bar without `ScrollBarAlwaysOff` (#450 #601 #1435). Still needs a manual check with these styles. | Segfault with Breeze5/Adwaita | S (manual check) | high | |
 | B3 | One damaged `plots.xml`/`world.opml`/`revisions.xml`, a `folder.txt` without ID or a non-numeric ID keeps the whole project from opening | "Can't open my project" | M | high | ✋ |
 | B4 | Multi-line metadata is not round-trip safe: indentation is lost, and trimming trailing whitespace moves notes into the scene text | Silent corruption | M | medium | |
 | B5 | Deleting a label/status relabels every item that uses a later one (#1010, only the crash is fixed) | Wrong data, persistent | S | medium | ✋ |
@@ -332,7 +378,8 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 | D2 | LanguageTool checks run synchronously in the GUI thread (#280) | Typing lag | L | medium | ✋ |
 | D3 | Starting LanguageTool blocks the UI (about 250 MB download the first time); a failed start shows "not installed" | UX | S–M | low | ✋ |
 | D4 | The clitic whitelist is the same for every language | A few false negatives | S | low | ✋ |
-| D5 | **Possible regression on `fix/spellcheck`:** French/Italian elisions (`l’homme`, `j’ai`) are underlined unless the dictionary knows the elided form. `develop` accepted them by splitting at the apostrophe. | False positives for French users | S | medium | |
+| D5 | ✅ `92bee56` Regression on `fix/spellcheck`: French/Italian elisions (`l’homme`, `j’ai`) are underlined unless the dictionary knows the elided form. `develop` accepted them by splitting at `’`. | False positives for French users | — | — | |
+| D6 | A word in typographic single quotes (`‘hello’`) gets a spelling menu without being underlined | Confusing menu | S | low | |
 | **E — Import, export, search** ||||||
 | E1 | Pandoc export drops scene text shaped like a YAML block | Silent loss in exports | S | medium | ✋ |
 | E2 | The default PDF engine `pdflatex` fails on common Unicode (even on the demo project); `--self-contained` is deprecated; Homebrew's pandoc is not found when Manuskript is started from the Finder (rest of #1178) | PDF export fails | S | medium | ✋ |
@@ -350,10 +397,10 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 | **G — Tests, CI, i18n** ||||||
 | G1 | Test fixtures leak about 220 temp entries (about 51 MB) per run and write to `~/.config/manuskript_tests` and `~/.local/share/manuskript_tests` | Developers, CI containers | S | medium | |
 | G2 | The fix branches have not run on this repository's CI yet (Python 3.9, xvfb, extra spellcheck libraries) | Review risk | S | medium | |
-| G3 | 21 new `tr()`/`safeTranslate()` strings are not in any `.ts`; `'Open {}'` can never be translated | Non-English users | S | low | ✋ |
+| G3 | 23 new `tr()`/`safeTranslate()` strings are not in any `.ts`; `'Open {}'` can never be translated | Non-English users | S | low | ✋ |
 | G4 | Rare segfault at interpreter exit (focusOut → submit during teardown, also on develop) | Flaky CI | S | low | |
 
-**A bugfix round of about one to two weeks** would cover A1–A5, B2, B5, C4, D5, E1–E3, E6, E7 and G1–G3. These are mostly S items, with one M (A3). Seven of them (A1, A3, B5, C4, E1, E2, G3) need a decision first, and that time is not included. The larger items that remain after that are:
+**A second bugfix round of about one week** would cover A6–A8, B5, C4, D6, E1–E3, E6, E7 and G1–G3. All of them are S items, except A8 (S–M). Five of them (B5, C4, E1, E2, G3) need a decision first, and that time is not included. The larger items that remain after that are:
 
 - B1, which waits for the policy decision (Q4),
 - B3, B4, B6 and B7,
@@ -371,19 +418,23 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 - **Status:** Present on `develop` too, and worse there. `setCurrentModelIndexes` did not flush the pending submit, so ctrl/shift-clicking a second item within 500 ms of the first click was enough to erase the summaries.
 - **Fix:** Either (a) disable the field for multi-selections, as `metadataView.py:86-102` already does with a comment referencing GitHub #10, or (b) submit in multi-index mode only after a real user edit (`document().setModified(False)` in `updateText`, check `isModified()` in `submit`). Add a regression test.
 - **Effort:** S. **Decision:** keep editing several summaries at once, or disable it?
+- **✅ Fixed** in `2a53412` with option (b). In multi-selection mode the editor writes only if the user changed the document and its text differs from what it showed. Typing, pasting, undo/redo, spelling corrections and completions still reach all selected items. A write to several items still clears the editor's undo history. Q6 asks whether option (a) is preferred.
 
 #### A2 — Split at cursor loses text
 - **Where:** `editorWidget.splitCursor` (`editorWidget.py:471-491`) splits the **model** text. The editor submits only on Space, on focus-out, or 500 ms after the last change, and Ctrl+K keeps the focus. So text typed since the last Space (within 500 ms) exists only in the editor. It is lost, the cut lands that many characters too far, and `setPlainText` clears the undo stack. `textEditView.callMainTreeView` was checked and does not lose text (only Duplicate copies the model text without the last unsubmitted characters).
 - **Status:** Present on `develop` too (same code).
 - **Fix:** Call `self.txtRedacText.submitPendingChanges()` before reading the cursor. That method comes with `53ed275` (`fix/editor-performance`). Without that branch, call `submit()`. Effort: S (1–2 h).
+- **✅ Fixed** in `1765c09` this way. The UTF-16 offset problem (C1) and the cleared undo stack remain.
 
 #### A3 — Structural changes are not "unsaved"
 - **Where:** `projectDirty` is only set from `dataChanged` (`mainWindow.py:994-1000`, `:1242-1249`). `removeCharacter`, `addPlot`, `worldModel.addItem`, removing a label… emit only `rowsInserted`/`rowsRemoved`. File > Close drops these changes without saving or asking, **whatever the "save on quit" setting**, because `closeProject` only saves when `projectDirty` is set (`mainWindow.py:1095`). Quitting drops them when "save on quit" is off. The no-change autosave does not fire either.
 - **Fix:** Also connect `rowsInserted/rowsRemoved/rowsMoved/modelReset` of the 7 models (and disconnect them in `breakConnections`). Then the root's invalid-index `dataChanged` (see 3.3.1) is no longer needed for the modified flag. Check whether other listeners rely on it before dropping it. Effort: M, because every path that changes rows without a user edit has to be checked. **Decision:** should every structural change mark the project modified?
+- **✅ Fixed** in `2f348bd`. `rowsInserted`, `rowsRemoved`, `rowsMoved`, `modelReset` and `layoutChanged` of the 7 models mark the project modified. On close, these and the old `dataChanged` connections are disconnected; before, the `dataChanged` ones were never disconnected, so a change to a closed project's models marked the next project modified. A test opens the sample project, browses every tab, character, plot, world item and outline item (not plot steps, see A7), saves and reopens it, and checks that no change signal fired. The root's invalid-index `dataChanged` is kept (3.4, item 8). A7 is a separate, older false positive.
 
 #### A4 — Failed "Save as" switches path
 - **Where:** `welcome.saveAsFile` (`welcome.py:200-213`) updates the recent files, `currentProject`, `lastProject` and the title without checking the result of `saveDatas`. `mainWindow.py:1272-1274` sets the path before saving.
 - **Fix:** Save first. On failure, restore the old path and cache and show the reason. Effort: S.
+- **✅ Fixed** in `9b9e2fa`. The path changes only after a successful save. On failure, the old path comes back, together with the save cache and the paths the items were last saved to. Without those, the next normal save could bring back removed items or leave a renamed folder behind as a duplicate. The user is told why once. The same commit fixes two related cases. First, a target folder that holds an older, read-only Manuskript project made the cleanup raise an uncaught `PermissionError`, which closed the app. Second, "Save as…" into the project's own folder (its own file, or a file whose folder links to it) deleted the files that could not be read when loading. A link to the project file under another name, next to another folder, is a real "Save as…" and writes a copy. Not changed: files written at the target before the failure stay there. After a "Save as…" onto a symbolic link of the project file, the recent-files list replaces the original's entry, because entries are compared by their real path (`welcome.recentFileKey`).
 
 #### A5 — Custom dictionary rewritten and possibly wiped
 - **Where:** `BasicDictionary.__init__` (`spellchecker.py:240-249`) calls `self._dict.create_dictionary_entry` before the subclass has created `_dict`. The resulting `AttributeError` is swallowed by a bare `except`, which calls `_saveCustomDict()` (non-atomic). A damaged file is replaced with `[]`. This affects pyspellchecker, symspellpy and LanguageTool.
@@ -393,6 +444,19 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
   - On a decode error, log it, keep a backup copy (e.g. `<lang>.json.gz.damaged`) and continue with an empty list.
   - Write atomically with `writeFile`. Import it inside `_saveCustomDict` or move it to `manuskript.functions`, to avoid a circular import.
 - **Effort:** S.
+- **✅ Fixed** in `0c13f97` as proposed, except that the damaged file is moved aside, not copied (BC19). `writeFile` is imported inside `_saveCustomDict`. Moving it to `manuskript.functions` would be cleaner, but several tests inject write errors by patching `version_1.open` and would have to be rewritten.
+
+#### A6 — Completer crash on a first multi-selection
+- **Where:** `MDEditCompleter.completer` is set only in `setCurrentModelIndex()` (`MDEditCompleter.py:34-41`). If the first selection in the Outline tab is a multi-selection (e.g. Ctrl+A before any single item was clicked), `keyPressEvent` calls `self.completer.isVisible()` and `self.completer.setVisible(False)` on `None` (`:85-100`). The `AttributeError` reaches the excepthook, and the app exits. The same code is on `develop`. Found during the A1 fix: A1 keeps this multi-edit path, and its tests click a single item first.
+- **Fix:** Guard both uses in `keyPressEvent`, or create the completer in `setCurrentModelIndexes()`. Add a test that selects all items and types into the full summary. Effort: S.
+
+#### A7 — Browsing marks a project modified
+- **Where:** Some editors write `""` over a value that is not set (`None`), for example `txtSubPlotSummary` when plot steps are browsed, and fields of a new project made from a welcome-screen template. That emits `dataChanged`, so the project counts as modified without an edit, and closing it asks to save or autosaves. Found while checking A3, which excludes this case from its "opening does not modify" test. The plot-step case is present on `develop` too (checked); the template case was not checked there.
+- **Fix:** Treat `None` and `""` as equal before submitting. Effort: S.
+
+#### A8 — Segfault on a project switch after an "outline" folder view
+- **Where:** Closing a project closes the editor tabs, but the closed `editorWidget`s are only `deleteLater`'d. If another project is created or loaded before control returns to the event loop, `loadProject` calls `tabSplitter.updateStyleSheet()` (`mainWindow.py:974`, `tabSplitter.py:101`), which reaches a stale tree view and segfaults in `QTreeViewPrivate::itemHeight`. Reproduced with a script on `eacaf8f` and on `develop`: show a folder in an editor's "outline" folder view, then close the project and create one without returning to the event loop. If the closed project's models are garbage-collected in between, it crashes on the first switch, otherwise after a few. In the app, File > Open and the recent-files menu are disabled while a project is open, so a switch normally goes through File > Close in a separate slot first. Whether any path reaches the crash was not checked. The B2 tests avoid it with `closeAllTabs()` and `sendPostedEvents(DeferredDelete)`.
+- **Fix:** Delete or detach the closed editors' views synchronously in `closeProject`, or skip editors that are pending deletion in `updateStyleSheet`. Effort: S–M.
 
 #### B1 — The excepthook policy (the single biggest lever)
 - **Where:** `logging.py:155-167` logs and then calls `sys.exit(1)`, on purpose ("fail fast"). Checked with an offscreen probe:
@@ -411,6 +475,7 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 - **Where:** `editorWidget.py:64-67` reparents the QTextEdit's own vertical scroll bar and keeps the "as needed" policy. Styles that call `scrollBar->mapFrom(scrollArea)` (Breeze5, Adwaita-qt) then dereference a null parent. `fullScreenEditor.py:45-51` reparents the same way but sets `ScrollBarAlwaysOff` first.
 - **Evidence:** The crash primitive (`mapFrom` after reparenting) was reproduced: SIGSEGV with the same frame chain as the gdb trace in #450. It was **not** reproduced end to end, because Breeze5 and Adwaita-qt were not available.
 - **Fix:** One line, `setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)`, plus a manual check on Plasma 5 or GNOME. Effort: S.
+- **✅ Fixed** in `07dce72`. A test checks that no scroll area in the main window shows a scroll bar outside itself, and that the moved bar still follows the text. The installed Breeze (6.8.1, Qt 5 plugin) did not take the crashing path in an offscreen session, even without the fix, and Adwaita-qt was not available, so the end-to-end crash is still not reproduced. **A manual check on Plasma 5 and on GNOME with Adwaita-qt is needed before the issues are closed.** Side effect: BC20.
 
 #### B3 — One damaged file blocks the whole project
 - **Where:** `ET.fromstring` without a recovering parser at `version_1.py:1041` (plots), `:1077` (world) and `:1164` (revisions). `outlineFromMMD` raises `KeyError` for a `folder.txt` without `ID:` (`:1231`/`:1263`), and `abstractModel.py:72` raises `ValueError` for `ID: 12a`. The only message is 5 seconds of status-bar text.
@@ -488,10 +553,13 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 - **D2:** `highlightBlockAfter` calls `checkText` synchronously, one HTTP request per paragraph when a text opens and per keystroke. Fix: debounce plus worker thread, apply results via `rehighlightBlock`. L. This would be the first thread in the editor code. **Decision:** worker thread, or document LT as a slower proof-reading mode and do only D1?
 - **D3:** A confirmation dialog before the first start (the ~250 MB download), and a distinct "failed to start" label (S). A background start with progress is M.
 - **D4:** `CLITICS = {s, n, m, ne, nen, nem}` applies to every language, so `your's` (and `your'm`, `could'n`) pass in English. Fix: per-language sets (S). Needs native speakers' examples. (`goin'` being flagged is a separate limitation: neither `goin` nor `goin'` is in the en_US dictionary.)
-- **D5 (possible regression on `fix/spellcheck`):**
-  - Since `fa37b1e`, words are no longer split at apostrophes. Elisions (`l’homme`, `j’ai`, `dell’anno`) are therefore accepted only if the dictionary knows the whole form. `develop` split them into `l` (single letters are not checked) and `homme`.
-  - Shown with a fake dictionary only. Hunspell French dictionaries handle elision themselves, so enchant users are probably not affected. Word-list backends (pyspellchecker, symspellpy) probably are.
-  - Fix before merging `fix/spellcheck`: accept `<elision prefix>’<known word>` for a per-language prefix list (fr: `c d j l m n s t qu jusqu lorsqu puisqu`; it: `l dell all dall nell sull un`…), together with D4. S.
+- **D5 (regression on `fix/spellcheck`), ✅ fixed in `92bee56`:**
+  - Since `fa37b1e`, words are no longer split at apostrophes. Elisions (`l’homme`, `j’ai`, `dell’anno`) were therefore accepted only if the dictionary knew the whole form. `develop` split them into `l` (single letters are not checked) and `homme`. Confirmed with the real pyspellchecker and symspellpy word lists: `L’homme`, `qu’il`, `c’est`, `j’ai` were underlined.
+  - The fix applies to the word-list backends only. They accept an elision from a per-language list (`ELISIONS` in `spellchecker.py`: French, Italian, Catalan), followed by a known word that starts with a vowel, `h`, `y` or a digit. After some elisions the word needs an accent that the list cannot enforce, because the bare form is a word too: French `jusqu’à`, `d’où`, Italian `c’è`, `dov’è`, `cos’è` (table `ELISION_ACCENTS`). Suggestions keep the elision and the apostrophe that was typed (`l’hommme` → `l’homme`, `jusqu’a` → `jusqu’à`).
+  - enchant is unchanged: it checks the whole elided form, as before. Splitting would hide wrong forms that dictionaries reject: the Italian Hunspell dictionary rejects `un’amico` and `l’libro`, and an old French one (v2.1) rejects `l’chat` and `l’héros`. Current French dictionaries (7.x) accept those two.
+  - Remaining, with the word lists: some wrong forms are accepted: h aspiré (`l’héros`), `y` words (`l’yaourt`), `l’onze`, `s’elle`, `c’a`, Italian plurals (`l’amici`), and the forms that can be right without the accent (`qu’a`, `d’a`, `tutt’e`). Some correct forms are underlined: colloquial `j’suis`, and Italian `un’` and `qualcun’` before feminine words the list does not know (`un’estate`, `qualcun’altra`), which `develop` accepted with `’`. With symspellpy, `dell’800` is underlined, because it does not know numbers. With enchant, `l’hommme` gets no suggestions with `’` (only with `'`), as before. The lists need a review by native speakers (Q22).
+
+- **D6:** `BasicDictionary.findSuggestions` does not strip quotes and apostrophes around the selected word the way `checkText` does, and Qt's `WordUnderCursor` includes `‘` and `’` but stops at the ASCII `'`. So `‘hello’` gets a spelling menu with "Add to dictionary" (in English also suggestions) although it is not underlined, and right-clicking the `l` of `l'amico` with the Italian word list opens a menu for `l`. Same on `develop`. Fix: strip like `checkText` before checking. S.
 
 #### E — Import, export, search (short)
 - **E1:** `disable-YAML` defaults to off (`abstractPlainText.py:178-180`). With pandoc 3.10, a `---` / `Later: she remembered…` / `---` passage vanishes from the output without a warning. Options:
@@ -522,13 +590,13 @@ Everything in this section is **still present on `fix/all-quickfixes`**. Each it
 
 #### G — Tests, CI, i18n (short)
 - **G1:** `conftest.py:34-41` and `:64-71` use `NamedTemporaryFile` + `copytree` and never clean up. One run leaves about 120 folders and 100 `.msk` files (about 51 MB). The package also writes `~/.config/manuskript_tests/` and `~/.local/share/manuskript_tests/`. Use `tmp_path` plus a session-wide isolated HOME/XDG. S.
-- **G2:** All 412 tests ran locally (Python 3.11 with the pinned `requirements.txt` wheels, and 3.13 with system PyQt5 5.15.10, offscreen), but **not yet in this repository's CI**. CI runs pytest on Python 3.9 in three jobs:
+- **G2:** All 630 tests passed locally with Python 3.13 (system PyQt5 5.15.10, offscreen), pyspellchecker 0.9.1, symspellpy 6.10.1 and French and Italian Hunspell dictionaries. Without these, 622 pass and 8 are skipped, with Python 3.13 and with Python 3.11 using the pinned `requirements.txt` wheels. They have **not yet run in this repository's CI**. CI runs pytest on Python 3.9 in three jobs:
   - `pytest.yml`: Ubuntu 24.04, xvfb, PyQt5 from `requirements.txt`.
-  - `build_linux.yml`: Ubuntu 22.04, latest PyQt5, offscreen, with `language_tool_python`, `symspellpy` and `pyspellchecker` installed. The local runs did not have those libraries.
+  - `build_linux.yml`: Ubuntu 22.04, latest PyQt5, offscreen, with `language_tool_python`, `symspellpy` and `pyspellchecker` installed. `language_tool_python` was not installed locally.
   - `build_osx.yml`: macOS.
 
   The workflows only trigger on `develop` or by manual dispatch. So: enable Actions on the fork, then start them for each branch from the Actions tab, or open PRs inside the fork against its `develop`. S, possibly more if xvfb-only or Python-3.9-only failures show up.
-- **G3:** Run `make translation` (21 new strings). Change `outlineBasics.py:123` to `safeTranslate(…, 'Open {}').format(title)`, because today the string is formatted before it is translated, so it never is. Wrap the literal in `welcome.py:317` too. Check that PyInstaller and Flatpak ship the `qtbase_*.qm` that `9c279f8` now loads. S.
+- **G3:** Run `make translation` (23 new strings). Change `outlineBasics.py:123` to `safeTranslate(…, 'Open {}').format(title)`, because today the string is formatted before it is translated, so it never is. Wrap the literal in `welcome.py:317` too. Check that PyInstaller and Flatpak ship the `qtbase_*.qm` that `9c279f8` now loads. S.
 - **G4:** Rare segfault at interpreter exit (`focusOutEvent → submit()` while widgets are destroyed). Pre-existing, not reliably reproducible. Guard `submit()` during teardown and use `QPersistentModelIndex` in `_indexes`. S.
 
 ## 3. Code quality assessment
@@ -563,7 +631,7 @@ They also grew the two central functions: `saveProject` went from 346 to 465 lin
 
 ### 3.2 Numbers
 
-Measured on `fix/all-quickfixes`, with `develop` in brackets where available.
+Measured on `fix/all-quickfixes` at `eacaf8f` (before the D5 and `fix/review-findings` merges), with `develop` in brackets where available.
 
 | Metric | Value |
 |---|---|
@@ -661,11 +729,11 @@ The order matters more than the size. Each step makes the next one safer, and no
 
 #### Medium (M, 1–3 days each)
 7. **No signals inside model transactions.** Defer the word-count propagation until after `endInsertRows`/`endRemoveRows`, and add a test that fails on `dataChanged` inside a bracket. This removes one of the two roots of the DnD bug class. The other is the copy-and-delete move (item 9).
-8. **Dirty flag from structural signals** (A3). Afterwards, drop the root's invalid-index `dataChanged`.
+8. **Dirty flag from structural signals** (A3, done in `2f348bd`). Next, drop the root's invalid-index `dataChanged`.
 9. **Real in-model moves** (`beginMoveRows` across parents) for internal drags. Keep the XML path for copy, paste and cross-window drops.
 10. **Make tree mutation private to the model.** The importer goes through `insertItems`, or a reset for bulk imports.
 11. **One ID allocator** per model type (never reuse an ID within a project) and referential cleanup on delete in the model layer (B6).
-12. **Editors submit only real user edits** (fixes A1 structurally), and the highlighter no longer changes block formats (C2).
+12. **Editors submit only real user edits.** `2a53412` does this for the multi-selection case (A1); this item makes it the rule for every editor. Also, the highlighter no longer changes block formats (C2).
 13. **A symmetric project lifecycle:** `deleteLater()` the old models and selection models, keep and delete the submenus, give timers a parent.
 14. **Run the tests on Windows in CI.** Add a `pyproject.toml` with extras (`spellcheck`, `export`, `test`) and a GUI entry point, and keep `requirements.txt` as the lock file.
 
@@ -679,7 +747,7 @@ The order matters more than the size. Each step makes the next one safer, and no
 16. **A `Project` container instead of `F.mainWindow()`** in models and persistence, one model per PR (start with `plotModel`, which cannot even be constructed without a window).
 17. **Split `MainWindow` into per-tab controllers**: spellcheck menu, view menu, character, plot and world tabs, navigation. Start with the spellcheck menu (self-contained, already tested).
 18. **Background work:** asynchronous `QProcess` for pandoc, then a LanguageTool worker (D2).
-19. **Qt 6 preparation on PyQt5:** scoped enums, `QRegularExpression`, `QApplication.instance()`, `exec()`. PyQt5 5.15 already accepts these, so this can land gradually. Drop QtWebKit, then switch bindings (PyQt6 or PySide6). XL in total, but phase 1 is many small mechanical PRs, partly covered by the 412 tests (73 % statement coverage overall, editor and views about 60 %).
+19. **Qt 6 preparation on PyQt5:** scoped enums, `QRegularExpression`, `QApplication.instance()`, `exec()`. PyQt5 5.15 already accepts these, so this can land gradually. Drop QtWebKit, then switch bindings (PyQt6 or PySide6). XL in total, but phase 1 is many small mechanical PRs, partly covered by the 630 tests (at `eacaf8f`, the 412 tests covered 73 % of the statements, editor and views about 60 %).
 
 The excepthook (B1) is deliberately not in this list. It is a policy decision rather than a refactoring, but it is the most valuable single change for users.
 
@@ -689,15 +757,15 @@ Suggested order for the discussion: the first block determines how the fixes get
 
 **Merging the fix branches**
 1. **PR format:** one PR per branch, in the order of 1.5? Or a different split, for example cherry-picking single commits?
-2. **Behaviour changes:** which of BC1–BC15 in section 1.4 are acceptable as new defaults? The most important are BC1 (subtree rewrite on folder rename), BC3 (refuse to open on unreadable root files) and BC9 (explicit "Start LanguageTool…"). Independently of that, the possible regression D5 (French elisions) should be fixed on `fix/spellcheck` before it is merged.
+2. **Behaviour changes:** which of BC1–BC21 in section 1.4 are acceptable as new defaults? The most important are BC1 (subtree rewrite on folder rename), BC3 (refuse to open on unreadable root files), BC9 (explicit "Start LanguageTool…") and BC17 (structural changes mark the project modified).
 3. **Translations:** regenerate the `.ts` files in these PRs, or in the usual release step (G3)?
 
 **Policy decisions on open items**
 
 4. **Excepthook (B1):** keep "fail fast", or *log → one dialog → separate recovery copy → user chooses quit or continue*? If the user continues, may autosave keep writing the real project?
 5. **Damaged root files (B3):** salvage what lxml can recover and keep a `.damaged` backup, or keep refusing to open but name the broken file?
-6. **Multi-edit in the Outline tab (A1):** keep editing several summaries at once (and only submit real edits), or disable it like the metadata panel?
-7. **Dirty flag (A3):** should every structural change (rows inserted, removed or moved) mark the project modified?
+6. **Multi-edit in the Outline tab (A1):** `2a53412` keeps editing several summaries at once and writes only real edits. Is that wanted, or should the field be disabled for multi-selections, like the metadata panel?
+7. **Dirty flag (A3):** `2f348bd` makes every structural change (rows inserted, removed or moved) mark the project modified. Is that OK?
 8. **IDs (B6, B5):** never reuse IDs (`max+1`, or a persisted counter)? When a label or status is deleted, reset the items that use it to "none", ask first, or move to stable IDs (a format change)?
 9. **Foreign files in project folders (B7):** adopt hand-made scenes without ID, list them as "not loaded", or keep ignoring them? Is the subtree rewrite on rename acceptable long term, or are real directory renames wanted?
 10. **Signals (B8):** with "save on quit" off, should SIGTERM save anyway, or write a recovery copy instead of asking?
@@ -710,7 +778,7 @@ Suggested order for the discussion: the first block determines how the fixes get
 
 15. **Supported versions:** which Python versions are officially supported (and tested in CI)? Should the README state the tested floor rather than the 3.6 syntax floor?
 16. **Packaging:** should Manuskript become pip-installable (`pyproject.toml` with extras and an entry point)? Is `pyenchant` required or optional?
-17. **Refactoring:** are staged refactors welcome (3.4 items 7–13 and 15–17, split into small PRs with tests; only a persisted ID counter in item 11 would touch the format)? If so, persistence first or the model contract first?
+17. **Refactoring:** are staged refactors welcome (3.4 items 7 and 9–13, and 15–17, split into small PRs with tests; only a persisted ID counter in item 11 would touch the format)? If so, persistence first or the model contract first?
 18. **Qt 6:** is a migration planned, and with which binding? May phase-1 changes (scoped enums, `QRegularExpression`, no `qApp`) be merged now on PyQt5? Can the QtWebKit path be dropped?
 19. **Tooling:** are `ruff` (F rules only to start), `pytest-qt` and mechanical cleanup PRs (unused imports, dead modules) acceptable?
 20. **Low-completion languages:** with `de6de99` (on `fix/ui-settings-search`), Settings lists every shipped `.qm`, including three at 0 %. Should that branch hide languages below some threshold before it is merged?
@@ -721,6 +789,7 @@ Suggested order for the discussion: the first block determines how the fixes get
     - E8: prune empty import folders by default?
     - F1: Settings without a project, or a language selector on the welcome screen?
     - F2: is a "Clear list" entry wanted?
+22. **Elisions (D5):** can French, Italian and Catalan speakers review the elision lists (`ELISIONS` and `ELISION_ACCENTS` in `spellchecker.py`)? Should colloquial elisions before a consonant (`j’suis`) be accepted?
 
 ## Appendix
 
@@ -736,16 +805,16 @@ QT_QPA_PLATFORM=offscreen python -m pytest -q manuskript/tests
 rm -rf "$T"
 ```
 
-Results: `develop` 39 passed. `fix/all-quickfixes` 412 passed, both with Python 3.13 / PyQt5 5.15.10 / Qt 5.15.19 (system packages) and with Python 3.11 using the pinned wheels from `requirements.txt`. Every single commit on the seven fix branches also passes the full suite on its own (84 runs), so `git bisect` works across them.
+Results: `develop` 39 passed. `fix/all-quickfixes` 622 passed and 8 skipped (630 tests), both with Python 3.13 / PyQt5 5.15.10 / Qt 5.15.19 (system packages) and with Python 3.11 using the pinned wheels from `requirements.txt`. The skipped tests need pyspellchecker, symspellpy, or French and Italian dictionaries for enchant. With them installed (checked with Python 3.13), all 630 pass. Every single commit on the eight fix branches also passes the full suite on its own (91 runs), so `git bisect` works across them.
 
 ### B. Upstream issues referenced by the fix branches
 
-#313 · #324 · #351 (related) · #467 · #661 · #694 · #719 · #761 · #808 · #811 · #819 · #918 · #929 (spellcheck part; export part still open, see E6) · #963 · #978 · #997 · #1010 (crash part only) · #1127 · #1128 · #1154 · #1178 · #1193 · #1215 · #1216 · #1220 · #1228 · #1264 · #1286 · #1306 · #1320 · #1356 · #1376 · #1393 · #1394 · #1421 · #1449
+#313 · #324 · #351 (related) · #450 · #467 · #601 · #661 · #694 · #719 · #761 · #808 · #811 · #819 · #918 · #929 (spellcheck part; export part still open, see E6) · #963 · #978 · #997 · #1010 (crash part only) · #1127 · #1128 · #1154 · #1178 · #1193 · #1215 · #1216 · #1220 · #1228 · #1264 · #1286 · #1306 · #1320 · #1356 · #1376 · #1393 · #1394 · #1421 · #1435 · #1449
 
 "Referenced" means the commit message explains how the commit relates to the issue. Some issues are only partly addressed. Please check each one before closing it.
 
 ### C. Method and limitations
 
 - **Static and dynamic analysis:** code reading, isolated offscreen scripts (PyQt5 5.15.10 / Qt 5.15.19), `pyflakes`, `coverage.py` and an AST-based size/complexity scan. Performance numbers were measured with `QT_QPA_PLATFORM=offscreen`, so absolute times on a real display are higher.
-- **Not available:** Windows, macOS, Breeze5/Adwaita-qt styles, a real X server, and a running LanguageTool server (a fake tool was used). Items that depend on these are marked as not verified end to end.
-- **Line numbers** refer to `fix/all-quickfixes` at `eacaf8f`.
+- **Not available:** Windows, macOS, Adwaita-qt, a real X server, and a running LanguageTool server (a fake tool was used). A Breeze style (6.8.1, Qt 5 plugin) was installed, but did not take the crashing path of B2 in an offscreen session. Items that depend on these are marked as not verified end to end.
+- **Line numbers** refer to `fix/all-quickfixes` at `eacaf8f`, before the D5 and `fix/review-findings` merges.
