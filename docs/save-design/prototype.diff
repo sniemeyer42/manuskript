@@ -1,0 +1,2067 @@
+diff --git base/manuskript/loadSave.py tree/manuskript/loadSave.py
+index 0d85567..f88a934 100644
+--- base/manuskript/loadSave.py
++++ tree/manuskript/loadSave.py
+@@ -13,7 +13,7 @@ from manuskript.functions import mainWindow
+ import logging
+ LOGGER = logging.getLogger(__name__)
+ 
+-def saveProject(version=None):
++def saveProject(version=None, path=None, force=False):
+ 
+     # While debugging, we don't save the project
+     # return
+@@ -21,40 +21,12 @@ def saveProject(version=None):
+     if version == 0:
+         return v0.saveProject()
+     else:
+-        return v1.saveProject()
++        return v1.saveProject(path=path, force=force)
+ 
+ 
+ def clearSaveCache():
+-    """The project is not saved where it was loaded from (new project, "Save as...")."""
+-    v1.cache = {}
+-    v1.freshTarget = True
+-    v1.unreadable = {}
+-
+-
+-def saveCacheState():
+-    """Returns what the save code knows about the current project folder, so that
+-    restoreSaveCache() can bring it back (e.g. after a failed "Save as..."): the save
+-    cache, and the paths the characters and outline items were last saved to, which
+-    saveProject() updates as it goes (it detects renamed and moved items with them)."""
+-    mw = mainWindow()
+-    paths = [(c, "lastPath", c.lastPath) for c in mw.mdlCharacter.characters]
+-
+-    def addItems(item):
+-        for child in item.children():
+-            paths.append((child, "_lastPath", child._lastPath))
+-            addItems(child)
+-
+-    addItems(mw.mdlOutline.rootItem)
+-    return dict(v1.cache), v1.freshTarget, dict(v1.unreadable), paths
+-
+-
+-def restoreSaveCache(state):
+-    cache, freshTarget, unreadable, paths = state
+-    v1.cache = dict(cache)
+-    v1.freshTarget = freshTarget
+-    v1.unreadable = dict(unreadable)
+-    for item, attribute, path in paths:
+-        setattr(item, attribute, path)
++    """The project is not saved where it was loaded from (closed, failed to load)."""
++    v1.store = None
+ 
+ 
+ def loadProject(project):
+diff --git base/manuskript/load_save/version_1.py tree/manuskript/load_save/version_1.py
+index 14a5012..e4148a6 100644
+--- base/manuskript/load_save/version_1.py
++++ tree/manuskript/load_save/version_1.py
+@@ -7,13 +7,17 @@
+ # versioning and third-party editing.
+ 
+ import errno
++import hashlib
+ import io
+ import os
+ import re
+ import shutil
++import stat
+ import string
++import time
+ import zipfile
+-from collections import OrderedDict
++from collections import Counter, OrderedDict
++from dataclasses import dataclass
+ 
+ from PyQt5.QtCore import Qt, QModelIndex
+ from PyQt5.QtGui import QColor, QStandardItem
+@@ -41,18 +45,9 @@ try:
+ except:
+     compression = zipfile.ZIP_STORED
+ 
+-cache = {}
+-
+-# True when the cache does not describe the project folder on disk (new project, "Save as...",
+-# project loaded from a single file): the next save in folder mode writes the whole project,
+-# after removing what an older project in that folder might have left. A project loaded from
+-# its folder is never a fresh target, even if nothing could be loaded from it.
+-freshTarget = True
+-
+-# Files and folders of the project folder that could not be read when the project was loaded
+-# (path relative to the project folder: reason). Their content is not in the project, so
+-# saveProject() never overwrites or removes them.
+-unreadable = {}
++# The FolderStore of the folder the current project was loaded from or last saved to
++# (None: new project, or a project in a single file).
++store = None
+ 
+ # Files that saveProject() writes at the root of a project folder (besides the
+ # "outline" and "characters" folders).
+@@ -153,7 +148,7 @@ def writeFile(filename, content, sync=False):
+                 shutil.copymode(filename, tmp)
+             except OSError as e:
+                 LOGGER.debug("Cannot keep the mode of %s: %s", filename, e)
+-        os.replace(tmp, filename)
++        _retry(os.replace, tmp, filename)
+ 
+     except OSError:
+         try:
+@@ -163,16 +158,497 @@ def writeFile(filename, content, sync=False):
+         raise
+ 
+ 
+-def isUnreadable(path):
++
++# ----------------------------------------------------------------------------------------------
++# Folder store (prototype of design-minimal.md): what Manuskript knows about a project folder.
++# ----------------------------------------------------------------------------------------------
++
++def digest(data):
++    """Digest of the content of a file, with line endings normalized: a file that git
++    checked out with CRLF (core.autocrlf on Windows) is the same as Manuskript's LF version."""
++    return hashlib.blake2b(data.replace(b"\r\n", b"\n").replace(b"\r", b"\n"),
++                           digest_size=16).digest()
++
++
++RACY_NS = 2 * 10 ** 9  # a file changed less than 2 s after it was recorded may look unchanged
++
++
++def isRacy(mtime):
++    return time.time_ns() - mtime < RACY_NS
++
++
++@dataclass
++class Entry:
++    """A file of the project folder that Manuskript loaded or wrote, as it was then."""
++    owner: tuple   # ("root", name), ("o", outline item ID), ("c", character ID), ("old", None)
++    size: int
++    mtime: int
++    digest: bytes
++    racy: bool = False   # recorded within RACY_NS of its mtime: compare the content next time
++
++
++class NotAProjectFolder(Exception):
++    pass
++
++
++def sameFolder(a, b):
++    """True if the folders a and b are the same folder (also through links)."""
++    try:
++        sa, sb = os.stat(a), os.stat(b)
++    except OSError:
++        sa = sb = None
++    # Some file systems have no file numbers (st_ino 0): then only the paths can tell.
++    if sa and sa.st_ino:
++        return os.path.samestat(sa, sb)
++    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
++
++
++class FolderStore:
++    def __init__(self, root, owned=None, unreadable=None):
++        self.root = root
++        self.owned = dict(owned or {})            # relative path: Entry
++        self.unreadable = dict(unreadable or {})  # relative path: reason
++
++    def path(self, rel):
++        return os.path.join(self.root, rel)
++
++    def isFolder(self, folder):
++        return sameFolder(folder, self.root)
++
++    def inUnreadable(self, rel):
++        return any(rel == u or rel.startswith(u + os.sep) for u in self.unreadable)
++
++    @classmethod
++    def forTarget(cls, root):
++        """The store of a folder the project is saved to for the first time (new project,
++        "Save as..."). Raises NotAProjectFolder if it is not empty and not a project.
++        The files of an older project in it are owned ("old"): replaced, and removed once the
++        new project has been written completely. Files without an ID are not Manuskript's."""
++        try:
++            names = [f for f in os.listdir(root) if f[:1] != "."] if os.path.isdir(root) else []
++        except OSError:
++            names = None
++        if names == []:
++            return cls(root)
++        if names is None or not os.path.isfile(os.path.join(root, "MANUSKRIPT")):
++            raise NotAProjectFolder(root)
++        texts, meta = {}, {}
++        for dirpath, dirnames, filenames in os.walk(root):
++            rel = os.path.relpath(dirpath, root)
++            rel = "" if rel == "." else rel
++            dirnames[:] = [d for d in dirnames if d[:1] != "." and
++                           (rel or d in ("outline", "characters"))]
++            for f in filenames:
++                p = os.path.join(rel, f)
++                if f[:1] == "." or (not rel and f not in projectFiles):
++                    continue
++                try:
++                    with open(os.path.join(dirpath, f), "rb") as fo:
++                        raw = fo.read()
++                        st = os.fstat(fo.fileno())
++                    texts[p] = raw if f[-4:] in (".xml", "opml") else raw.decode("utf8")
++                except (OSError, UnicodeDecodeError):
++                    continue
++                meta[p] = Entry(("old", None), st.st_size, st.st_mtime_ns, digest(raw),
++                                isRacy(st.st_mtime_ns))
++        return cls(root, {p: meta[p] for p in loadableFiles(texts)})
++
++
++def loadableFiles(files):
++    """The paths of files {relative path: str (text) or bytes (xml)} that loadProject()
++    loads into the project: the root project files, every file under characters/, and
++    under outline/ the folder.txt (with an ID) of folders whose parents are loaded, and the
++    text files with an ID in them."""
++    out = {p for p in files if p in projectFiles or p.split(os.sep)[0] == "characters"}
++
++    def hasID(p):
++        return isinstance(files.get(p), str) and "ID" in parseMMDFile(files[p], asDict=True)[0]
++
++    loaded = {"outline"}
++    for p in sorted((p for p in files if p.split(os.sep)[0] == "outline"),
++                    key=lambda p: p.count(os.sep)):
++        d = os.path.dirname(p)
++        if os.path.basename(p) == "folder.txt":
++            if d != "outline" and os.path.dirname(d) in loaded and hasID(p):
++                loaded.add(d)
++                out.add(p)
++    for p in files:
++        if p.split(os.sep)[0] == "outline" and os.path.basename(p) != "folder.txt" and \
++                os.path.dirname(p) in loaded and hasID(p):
++            out.add(p)
++    return out
++
++
++class SaveReport:
++    """Result of writeFolder(): true if everything was saved."""
++
++    def __init__(self):
++        self.failed = []      # (relative path, reason): not written
++        self.conflicts = []   # (relative path, reason): changed outside Manuskript
++        self.warnings = []    # (relative path, reason): e.g. an old file not removed
++
++    def __bool__(self):
++        return not self.failed and not self.conflicts
++
++    @classmethod
++    def refused(cls, folder):
++        r = cls()
++        r.failed.append((folder, "not a Manuskript project"))
++        return r
++
++
++# Windows: another program (antivirus, indexer, sync client, editor) has the file open
++_TRANSIENT = (5, 32, 33)  # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
++
++
++def _transient(e):
++    return isinstance(e, PermissionError) and getattr(e, "winerror", None) in _TRANSIENT
++
++
++def _retry(fn, *args):
++    delay = 0.05
++    while True:
++        try:
++            return fn(*args)
++        except OSError as e:
++            if not _transient(e) or delay > 0.4:
++                raise
++            time.sleep(delay)
++            delay *= 2
++
++
++def _list(absdir):
++    """{name: (is a file, size, mtime_ns) or None} of a folder, None if it does not exist.
++    On Windows the sizes and times come with the listing (no system call per file)."""
++    out = {}
++    try:
++        it = os.scandir(absdir)
++    except (FileNotFoundError, NotADirectoryError):
++        return None
++    with it:
++        for e in it:
++            try:
++                st = e.stat()
++                out[e.name] = (stat.S_ISREG(st.st_mode), st.st_size, st.st_mtime_ns)
++            except OSError:
++                out[e.name] = None
++    return out
++
++
++def writeFolder(store, files, force=False, sync=True):
+     """
+-    Returns True if path (relative to the project folder) is, is in, or contains a file or
+-    folder that could not be read when the project was loaded.
++    Writes files [(relative path, content, owner)] to the folder of store, which it updates.
++    Never overwrites nor removes a file that is not in store.owned, nor one that changed on
++    disk since Manuskript read or wrote it (a conflict: then nothing is written, unless force).
++    Old files of the store that are not in files are removed once the new ones are written.
++    @return: SaveReport
+     """
+-    return any(path == u or path.startswith(u + os.sep) or u.startswith(path + os.sep)
+-               for u in unreadable)
++    report = SaveReport()
++    produced = OrderedDict()
++    for p, content, owner in files:
++        produced[p] = (content.encode("utf8") if isinstance(content, str) else content, owner)
++    ownerPaths = {}
++    for p, (c, o) in produced.items():
++        if o[0] in ("o", "c"):
++            ownerPaths.setdefault(o, []).append(p)
++    folded = {p.lower(): p for p in produced}
++
++    # What is on disk: one listing per folder
++    listing = {}
++    for d in {os.path.dirname(p) for p in list(produced) + list(store.owned)}:
++        if not store.inUnreadable(d):
++            try:
++                listing[d] = _list(store.path(d))
++            except OSError as e:
++                listing[d] = e
++
++    def onDisk(p, exact=False):
++        """(name on disk, info) or None. The name can differ in case from p."""
++        l = listing.get(os.path.dirname(p))
++        if isinstance(l, OSError):
++            raise l
++        if not l:
++            return None
++        name = os.path.basename(p)
++        if name in l:
++            return name, l[name]
++        if not exact:
++            for n in l:
++                if n.lower() == name.lower():
++                    return n, l[n]
++        return None
++
++    def current(p, e, info):
++        """Digest of p on disk if it changed since Manuskript read or wrote it, else e.digest."""
++        if info is None or not info[0]:
++            return None
++        if (info[1], info[2]) == (e.size, e.mtime) and not e.racy:
++            return e.digest
++        with open(store.path(p), "rb") as f:
++            return digest(f.read())
++
++    # Plan
++    todo, ok, failedPaths = [], set(), set()
++
++    def fail(p, reason):
++        report.failed.append((p, reason))
++        failedPaths.add(p)
++
++    for p, (data, owner) in produced.items():
++        if store.inUnreadable(p):
++            fail(p, store.unreadable.get(p, "could not be read when the project was loaded"))
++            continue
++        e = store.owned.get(p)
++        try:
++            d = onDisk(p)
++            if d is None:
++                if e is not None and not force:
++                    report.conflicts.append((p, "deleted outside Manuskript"))
++                else:
++                    todo.append(p)
++                continue
++            name, info = d
++            if name != os.path.basename(p):
++                if os.path.join(os.path.dirname(p), name) not in store.owned:
++                    fail(p, "a file whose name only differs in case exists")
++                else:
++                    todo.append(p)  # Renamed in case only (its old file is removed below)
++                continue
++            if info is None or not info[0]:
++                fail(p, "not a file")
++                continue
++            if e is None:
++                fail(p, "exists, and was not loaded by Manuskript")
++                continue
++            now = current(p, e, info)
++            if now not in (e.digest, digest(data)) and not force:
++                report.conflicts.append((p, "changed outside Manuskript"))
++                continue
++            if now == digest(data):
++                ok.add(p)
++                store.owned[p] = Entry(owner, info[1], info[2], now, isRacy(info[2]))
++            else:
++                todo.append(p)
++        except OSError as err:
++            fail(p, err.strerror or str(err))
+ 
++    stale = [s for s in store.owned if s not in produced]
++    gone = set()
++    for s in stale:
++        try:
++            d = onDisk(s, exact=True)
++            if d is None:
++                gone.add(s)
++            elif current(s, store.owned[s], d[1]) != store.owned[s].digest and not force:
++                report.conflicts.append((s, "changed outside Manuskript"))
++        except OSError:
++            pass
++    if report.conflicts and not force:
++        return report
++
++    live = set(ownerPaths)
++
++    def ancestors(p):
++        """The folder.txt of every folder above p (inside outline)."""
++        parts = p.split(os.sep)
++        if parts[0] != "outline":
++            return []
++        return [f for f in (os.path.join(*parts[:k], "folder.txt") for k in range(2, len(parts)))
++                if f != p]
++
++    def ready(f):
++        """The folder.txt f is on disk, and it is the file of the folder that produces it
++        (written, unchanged, or an older version of that same folder's file)."""
++        e = store.owned.get(f)
++        return e is not None and f in produced and e.owner == produced[f][1]
++
++    def safe(owner):
++        """All files of the item (several for a character ID used twice), and the folder.txt
++        of their folders, are on disk."""
++        ps = ownerPaths.get(owner)
++        return bool(ps) and all(p in ok and all(ready(f) for f in ancestors(p)) for p in ps)
++
++    touched = set()
++
++    def write(p):
++        data, owner = produced[p]
++        a = store.path(p)
++        try:
++            os.makedirs(os.path.dirname(a), exist_ok=True)
++            writeFile(a, data, sync=sync)
++            st = os.stat(a)
++        except OSError as err:
++            fail(p, err.strerror or str(err))
++            return
++        store.owned[p] = Entry(owner, st.st_size, st.st_mtime_ns, digest(data), True)
++        ok.add(p)
++        touched.add(os.path.dirname(a))
++
++    # Write. A file that is still the only copy of another item (titles with the same file
++    # name, #1320) is replaced only once that item has been written at its new place.
++    def blocker(p):
++        """None if p can be written now, else (reason, the paths it waits for)."""
++        for f in ancestors(p):
++            if not ready(f):
++                return ("its folder could not be saved", [f])
++        e = store.owned.get(p)
++        if e is None or e.owner == produced[p][1] or e.owner not in live or safe(e.owner):
++            return None
++        return ("its file name is still used by another item", ownerPaths[e.owner])
++
++    pending = todo
++    while pending:
++        rest = []
++        for p in pending:
++            b = blocker(p)
++            if b is None:
++                write(p)
++            elif any(q in failedPaths or q not in todo and q not in ok for q in b[1]):
++                fail(p, b[0] + ", not saved")
++            else:
++                rest.append(p)
++        if len(rest) == len(pending):
++            # A cycle: items that swapped places and have the same file name. Writing one of
++            # them would overwrite the only copy of the other: none is written.
++            for p in rest:
++                fail(p, "it has the same file name as another item that took its place; "
++                        "rename one of them")
++            break
++        pending = rest
++
++    if sync and os.name != "nt":
++        for d in touched:
++            try:
++                fd = os.open(d, os.O_RDONLY)
++                try:
++                    os.fsync(fd)
++                finally:
++                    os.close(fd)
++            except OSError:
++                pass
+ 
+-def saveProject(zip=None):
++    # Old files that are the new file (renamed in case only, on a case-insensitive system)
++    same = set()
++    for s in stale:
++        q = folded.get(s.lower())
++        if q is not None and q in ok:
++            try:
++                isSame = os.path.samefile(store.path(s), store.path(q))
++            except OSError:
++                isSame = False
++            if isSame:
++                same.add(s)
++                del store.owned[s]
++
++    # Renamed or moved folders take along what Manuskript did not load in them (files that
++    # could not be read, files of the user), once they have been written at their new place.
++    ownedFolders = {os.path.dirname(p) for p in store.owned if os.path.basename(p) == "folder.txt"}
++    stuck = set()
++    for s in stale:
++        e = store.owned.get(s)
++        if e is None or os.path.basename(s) != "folder.txt" or e.owner not in live \
++                or not safe(e.owner) or os.path.basename(ownerPaths[e.owner][0]) != "folder.txt":
++            continue
++        old, new = os.path.dirname(s), os.path.dirname(ownerPaths[e.owner][0])
++        try:
++            entries = sorted(os.listdir(store.path(old)))
++        except OSError:
++            continue
++        for n in entries:
++            rel = os.path.join(old, n)
++            if rel in store.owned or rel in ownedFolders or re.match(r"^\..*\.tmp$", n):
++                continue
++            target = os.path.join(new, n)
++            try:
++                if target.lower() in folded or os.path.lexists(store.path(target)):
++                    raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), target)
++                _retry(os.replace, store.path(rel), store.path(target))
++            except OSError as err:
++                LOGGER.error("Cannot move %s to %s: %s", rel, target, err)
++                report.warnings.append((rel, "not moved with its folder: {}".format(
++                    err.strerror or err)))
++                stuck.add(old)
++                continue
++            for k in [k for k in store.unreadable if k == rel or k.startswith(rel + os.sep)]:
++                store.unreadable[target + k[len(rel):]] = store.unreadable.pop(k)
++
++    # Remove the old files of removed, renamed and moved items. Those of an item whose new
++    # files are not all on disk are kept: they are its only copy.
++    kept = set()
++    for s in stale:
++        e = store.owned.get(s)
++        if e is None or s in gone:
++            continue
++        if (e.owner[0] == "old" and report.failed) or (e.owner in live and not safe(e.owner)):
++            kept.add(s)
++    def addedOnDisk(d):
++        """d holds a file or folder that Manuskript did not load and that would be loaded
++        (a scene with an ID, a folder with a folder.txt): e.g. added by git while the project
++        was open. Its folder.txt must stay, or it would no longer be loaded."""
++        try:
++            names = os.listdir(store.path(d))
++        except OSError:
++            return False
++        for n in names:
++            rel = os.path.join(d, n)
++            if n[:1] == "." or rel in store.owned:
++                continue
++            a = store.path(rel)
++            if os.path.isdir(a):
++                if os.path.join(rel, "folder.txt") not in store.owned and \
++                        os.path.isfile(os.path.join(a, "folder.txt")):
++                    return True
++            elif n[-4:] not in (".xml", "opml"):
++                try:
++                    with open(a, "rb") as f:
++                        md = parseMMDFile(f.read().decode("utf8"), asDict=True)[0]
++                except (OSError, UnicodeDecodeError):
++                    continue
++                if "ID" in md:
++                    return True
++        return False
++
++    def order(s):
++        return (-s.count(os.sep), os.path.basename(s) == "folder.txt", s)
++
++    emptied = set()
++    for s in sorted(stale, key=order):
++        if s in same or s in kept or s not in store.owned:
++            continue
++        if s in gone:
++            del store.owned[s]
++            continue
++        if os.path.basename(s) == "folder.txt":
++            d = os.path.dirname(s)
++            # Without it, what is left in its folder would no longer be loaded
++            if d in stuck or any(k.startswith(d + os.sep) for k in kept) or \
++                    any(u.startswith(d + os.sep) for u in store.unreadable) or addedOnDisk(d):
++                kept.add(s)
++                continue
++        try:
++            _retry(os.remove, store.path(s))
++        except FileNotFoundError:
++            pass
++        except OSError as err:
++            LOGGER.error("Cannot remove file %s: %s", s, err)
++            report.warnings.append((s, "not removed: {}".format(err.strerror or err)))
++            continue
++        del store.owned[s]
++        emptied.add(os.path.dirname(s))
++
++    for d in sorted(emptied, key=lambda d: -d.count(os.sep)):
++        while d and d not in ("outline", "characters"):
++            try:
++                os.rmdir(store.path(d))
++            except OSError:
++                break
++            d = os.path.dirname(d)
++
++    return report
++
++
++
++def saveProject(zip=None, path=None, force=False):
+     """
+     Saves the project. If zip is False, the project is saved as a multitude of plain-text files for the most parts
+     and some XML or zip? for settings and stuff.
+@@ -189,14 +665,11 @@ def saveProject(zip=None):
+ 
+     # List of files to be written
+     files = []
+-    # List of files to be removed
+-    removes = []
+-    # List of files to be moved
+-    moves = []
+ 
+     # MainWindow interaction things.
+     mw = mainWindow()
+-    project = mw.currentProject
++    global store
++    project = path or mw.currentProject
+ 
+     # Sanity check (see PR-583): make sure we actually have a current project.
+     if project == None:
+@@ -204,7 +677,7 @@ def saveProject(zip=None):
+         return False
+ 
+     # File format version
+-    files.append(("MANUSKRIPT", "1"))
++    files.append(("MANUSKRIPT", "1", ("root", "MANUSKRIPT")))
+ 
+     # General infos (book and author)
+     # Saved in plain text, in infos.txt
+@@ -233,7 +706,7 @@ def saveProject(zip=None):
+                 spaces=" " * (15 - len(name)),
+                 value=val
+             )
+-    files.append((path, content))
++    files.append((path, content, ("root", path)))
+ 
+     ####################################################################################################################
+     # Summary
+@@ -257,7 +730,7 @@ def saveProject(zip=None):
+         if val:
+             content += formatMetaData(name, val, 12)
+ 
+-    files.append((path, content))
++    files.append((path, content, ("root", path)))
+ 
+     ####################################################################################################################
+     # Label & Status
+@@ -285,7 +758,7 @@ def saveProject(zip=None):
+                     color="" if color == "" else ":" + " " * (20 - len(text)) + color
+                 )
+ 
+-        files.append((path, content))
++        files.append((path, content, ("root", path)))
+ 
+     ####################################################################################################################
+     # Characters
+@@ -317,14 +790,7 @@ def saveProject(zip=None):
+             slugName=slugify(c.name())[:maxSlugLength]
+         ))
+ 
+-        # Has the character been renamed?
+-        if c.lastPath and cpath != c.lastPath:
+-            moves.append((c.lastPath, cpath))
+-
+-        # Update character's path
+-        c.lastPath = cpath
+-
+-        files.append((cpath, content))
++        files.append((cpath, content, ("c", c.ID())))
+ 
+     ####################################################################################################################
+     # Texts
+@@ -333,14 +799,11 @@ def saveProject(zip=None):
+     mdl = mw.mdlOutline
+ 
+     # Go through the tree
+-    f, m, r = exportOutlineItem(mdl.rootItem)
+-    files += f
+-    moves += m
+-    removes += r
++    files += exportOutlineItem(mdl.rootItem)
+ 
+     # Writes revisions (if asked for)
+     if settings.revisions["keep"]:
+-        files.append(("revisions.xml", mdl.saveToXML()))
++        files.append(("revisions.xml", mdl.saveToXML(), ("root", "revisions.xml")))
+ 
+     ####################################################################################################################
+     # World
+@@ -355,7 +818,7 @@ def saveProject(zip=None):
+     body = ET.SubElement(root, "body")
+     addWorldItem(body, mdl)
+     content = ET.tostring(root, encoding="UTF-8", xml_declaration=True, pretty_print=True)
+-    files.append((path, content))
++    files.append((path, content, ("root", path)))
+ 
+     ####################################################################################################################
+     # Plots (mw.mdlPlots)
+@@ -368,7 +831,7 @@ def saveProject(zip=None):
+     root = ET.Element("root")
+     addPlotItem(root, mdl)
+     content = ET.tostring(root, encoding="UTF-8", xml_declaration=True, pretty_print=True)
+-    files.append((path, content))
++    files.append((path, content, ("root", path)))
+ 
+     ####################################################################################################################
+     # Settings
+@@ -376,12 +839,12 @@ def saveProject(zip=None):
+     # Maybe include them only if zipped?
+     # Well, for now, we keep them here...
+ 
+-    files.append(("settings.txt", settings.save(protocol=0)))
++    files.append(("settings.txt", settings.save(protocol=0), ("root", "settings.txt")))
+ 
+     # We check if the file exist and we have write access. If the file does
+     # not exist, we check the parent folder, because it might be a new project.
+-    if os.path.exists(project) and not os.access(project, os.W_OK) or \
+-       not os.path.exists(project) and not os.access(os.path.dirname(project), os.W_OK):
++    if zip and (os.path.exists(project) and not os.access(project, os.W_OK) or \
++       not os.path.exists(project) and not os.access(os.path.dirname(project), os.W_OK)):
+         LOGGER.error("You don't have write access to save this project there.")
+         return False
+ 
+@@ -400,7 +863,7 @@ def saveProject(zip=None):
+         try:
+             data = io.BytesIO()
+             with zipfile.ZipFile(data, mode="w") as zf:
+-                for filename, content in files:
++                for filename, content, owner in files:
+                     zf.writestr(filename, content, compress_type=compression)
+ 
+             writeFile(project, data.getvalue(), sync=True)
+@@ -416,256 +879,69 @@ def saveProject(zip=None):
+             dlg.open()
+             return False
+ 
++        store = None
+         return True
+ 
+     ####################################################################################################################
+     # Save to plain text
+ 
+     else:
+-        filesWithPermissionErrors = list()
+-
+-        # Project path
+-        dir = os.path.dirname(project)
+-
+-        # Folder containing file: name of the project file (without .msk extension)
+-        folder = os.path.splitext(os.path.basename(project))[0]
+-
+-        # Debug
+-        LOGGER.debug("Saving to folder %s", folder)
+-
+-        # If the project has not been loaded from this folder (new project, "Save as..."),
+-        # we remove what an older project in that folder might have left, just to be sure.
+-        # Only if the folder is a Manuskript project, and only the files Manuskript writes:
+-        # never wipe a folder of the user that happens to have the project's name.
+-        global freshTarget
+-        if freshTarget:
+-            target = os.path.join(dir, folder)
++        target = os.path.join(os.path.dirname(project),
++                              os.path.splitext(os.path.basename(project))[0])
++        # A normal save always compares with what this project's store knows (a folder that
++        # was replaced on disk shows up as conflicts); "Save as..." decides by folder identity.
++        if store is not None and (path is None or store.isFolder(target)):
++            s = store
++            s.root = target
++        else:
+             try:
+-                # Hidden files (.DS_Store...) do not count
+-                notEmpty = os.path.isdir(target) and \
+-                    [f for f in os.listdir(target) if f[:1] != "."]
+-            except OSError:
+-                notEmpty = True
+-            if notEmpty:
+-                if not os.path.isfile(os.path.join(target, "MANUSKRIPT")):
+-                    LOGGER.error("Cannot save project: the folder %s already exists and is not "
+-                                 "a Manuskript project.", target)
+-                    dlg = ListDialog(mw)
+-                    dlg.setModal(True)
+-                    dlg.setWindowTitle(dlg.tr("Project not saved"))
+-                    dlg.label.setText(dlg.tr(
+-                        "The project is saved in a folder named like the project file. This folder "
+-                        "already exists and is not a Manuskript project, so the project cannot be "
+-                        "saved there. Use \"Save as...\" to save it under another name."))
+-                    QListWidgetItem(target, dlg.listWidget)
+-                    dlg.open()
+-                    return False
+-
+-                removing = target
+-                try:
+-                    for sub in ["outline", "characters"]:
+-                        removing = os.path.join(target, sub)
+-                        if os.path.isdir(removing):
+-                            shutil.rmtree(removing)
+-                    for f in projectFiles:
+-                        removing = os.path.join(target, f)
+-                        if os.path.isfile(removing):
+-                            os.remove(removing)
+-                except OSError as e:
+-                    # The cache does not describe what is left: the next save tries again.
+-                    # What was removed before the error is gone (rmtree does not undo).
+-                    LOGGER.error("Cannot save project: cannot remove the files of the older "
+-                                 "project in %s: %s", target, e)
+-                    # For a file in a subfolder, the error has only its name (Python 3.11)
+-                    failed = e.filename if e.filename and os.path.isabs(e.filename) else removing
+-                    dlg = ListDialog(mw)
+-                    dlg.setModal(True)
+-                    dlg.setWindowTitle(dlg.tr("Project not saved"))
+-                    dlg.label.setText(dlg.tr(
+-                        "The project is saved in a folder named like the project file. This folder "
+-                        "holds an older Manuskript project, whose files are removed first. They "
+-                        "could not all be removed (some of them may have been removed already), "
+-                        "so the project cannot be saved there."))
+-                    QListWidgetItem("{} ({})".format(failed, e.strerror or e), dlg.listWidget)
+-                    dlg.open()
+-                    return False
+-
+-            # From now on, the cache describes what is in the folder.
+-            freshTarget = False
+-
+-        # Renamed / moved items are NOT moved on disk. Their new path is not in the cache,
+-        # so they are written below, and their old file is then removed as a phantom.
+-        # Moving files in place one by one is not safe: an item's new path can be the old
+-        # path of another item that has not been moved yet (its file gets overwritten,
+-        # see #1320), the destination folder may not exist yet (#1306), and renaming the
+-        # cache keys by substring corrupted the cache (#1216, #761).
+-        for old, new in moves:
+-            LOGGER.debug("* %s has been renamed/moved to %s, it will be rewritten", old, new)
+-
+-        # Writing files
+-        for path, content in files:
+-            filename = os.path.join(dir, folder, path)
+-
+-            # A file that could not be read when the project was loaded is not overwritten
+-            # (it is not in the cache, but its content is not in the project either).
+-            if isUnreadable(path):
+-                LOGGER.error("Cannot write file %s: it could not be read when the project was "
+-                             "loaded.", filename)
+-                filesWithPermissionErrors.append("{} ({})".format(
+-                    filename, unreadable.get(path, "could not be read")))
+-                continue
+-
+-            # Check if content is in cache, and write if necessary
+-            # (also if the file has disappeared from disk since it was cached)
+-            if path not in cache or cache[path] != content or not os.path.exists(filename):
+-                LOGGER.debug("* Writing file {} ({})".format(path, "not in cache" if path not in cache else "different"))
+-                # Any error (permission, name too long, disk full...) is reported, and must not
+-                # stop the other files from being written.
+-                try:
+-                    os.makedirs(os.path.dirname(filename), exist_ok=True)
+-                    writeFile(filename, content)
+-                    cache[path] = content
+-
+-                except OSError as e:
+-                    LOGGER.error("Cannot write file %s: %s", filename, e)
+-                    filesWithPermissionErrors.append("{} ({})".format(filename, e.strerror or e))
+-                    # The file on disk is not up to date: it must be written next time.
+-                    if path in cache:
+-                        cache[path] = None
+-
+-        # Removing phantoms (files of items that have been removed, renamed or moved)
+-        written = {p.lower(): p for p, c in files}
+-        phantoms = [p for p in cache if p not in [p for p, c in files]]
+-
+-        # The old files of a renamed or moved item are not removed if its new files could not
+-        # all be written: they are then the only copy of its content. They stay on disk and in
+-        # the cache, and the item keeps its old path, so that the next save handles it as
+-        # moved again (and removes the old files once the new ones have been written).
+-        # The old files of removed items, and of the items written at their new place, are
+-        # removed even if other files could not be written.
+-        failed = [p for p, c in files if cache.get(p) != c]
+-        # A folder whose folder.txt could not be written is not loaded, nor anything in it:
+-        # the items written into it have not been written either.
+-        unloadable = [os.path.dirname(f) for f in failed if os.path.basename(f) == "folder.txt"
+-                      and not os.path.exists(os.path.join(dir, folder, f))]
+-        notMoved = {new: old for old, new in moves
+-                    if any(f == new or f.startswith(new + os.sep) for f in failed)
+-                    or any(new.startswith(u + os.sep) for u in unloadable)}
+-        if notMoved:
+-            LOGGER.warning("Some files could not be written, the old files of %d renamed or "
+-                           "moved items are not removed.", len(notMoved))
+-            phantoms = [p for p in phantoms if not any(
+-                p == old or p.startswith(old + os.sep) for old in notMoved.values())]
+-
+-            for c in mw.mdlCharacter.characters:
+-                c.lastPath = notMoved.get(c.lastPath, c.lastPath)
+-
+-            def keepOldPath(item):
+-                for child in item.children():
+-                    child._lastPath = notMoved.get(child._lastPath, child._lastPath)
+-                    keepOldPath(child)
+-
+-            keepOldPath(mw.mdlOutline.rootItem)
+-
+-        # Files and folders that could not be read when the project was loaded are not part of
+-        # the project, so they are not written with the other files of a renamed or moved
+-        # folder. They are moved to its new place once it has been written: left in the old
+-        # folder, they would no longer be loaded once its folder.txt has been removed.
+-        entries = list(unreadable)
+-        for old, new in moves:
+-            if new in notMoved or not os.path.isdir(os.path.join(dir, folder, new)):
+-                continue
+-            for u in [u for u in entries if u in unreadable and os.path.dirname(u) == old]:
+-                target = os.path.join(new, os.path.basename(u))
+-                try:
+-                    if target.lower() in written or \
+-                            os.path.lexists(os.path.join(dir, folder, target)):
+-                        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), target)
+-                    os.replace(os.path.join(dir, folder, u), os.path.join(dir, folder, target))
+-                except OSError as e:
+-                    # The old folder then keeps its folder.txt (see below)
+-                    LOGGER.error("Cannot move %s to %s: %s", u, target, e)
+-                    continue
+-                LOGGER.debug("* Moved %s to %s", u, target)
+-                for k in [k for k in unreadable if k == u or k.startswith(u + os.sep)]:
+-                    unreadable[target + k[len(u):]] = unreadable.pop(k)
+-
+-        for path in phantoms:
+-            filename = os.path.join(dir, folder, path)
+-
+-            # On a case-insensitive file system (Windows, macOS), the old file of an item
+-            # whose name only changed in case is the file that has just been written.
+-            same = written.get(path.lower())
++                s = FolderStore.forTarget(target)
++            except NotAProjectFolder:
++                LOGGER.error("Cannot save project: the folder %s already exists and is not "
++                             "a Manuskript project.", target)
++                dlg = ListDialog(mw)
++                dlg.setModal(True)
++                dlg.setWindowTitle(dlg.tr("Project not saved"))
++                dlg.label.setText(dlg.tr(
++                    "The project is saved in a folder named like the project file. This folder "
++                    "already exists and is not a Manuskript project, so the project cannot be "
++                    "saved there. Use \"Save as...\" to save it under another name."))
++                QListWidgetItem(target, dlg.listWidget)
++                dlg.open()
++                return SaveReport.refused(target)
++
++        report = writeFolder(s, files, force=force)
++
++        # The project file: never created by a save that failed
++        if report or os.path.exists(project):
+             try:
+-                isWrittenFile = same is not None and \
+-                    os.path.samefile(filename, os.path.join(dir, folder, same))
++                with open(project, "rb") as f:
++                    same = f.read().strip() == b"1"
+             except OSError:
+-                isWrittenFile = False
+-
+-            try:
+-                if isWrittenFile:
+-                    LOGGER.debug("* Not removing %s: it is the same file as %s", path, same)
+-
+-                elif isUnreadable(path):
+-                    LOGGER.debug("* Not removing %s: it could not be read when loading", path)
+-
+-                elif os.path.basename(path) == "folder.txt" and any(
+-                        u.startswith(os.path.dirname(path) + os.sep)
+-                        for u in list(unreadable) + list(notMoved.values())):
+-                    # Without it, the files of its folder that could not be read when loading
+-                    # (and could not be moved with it), and the old files kept above, would no
+-                    # longer be loaded.
+-                    LOGGER.warning("* Not removing %s: its folder holds files that could not be "
+-                                   "read when loading, or that could not be moved", path)
+-                    continue
+-
+-                elif os.path.isdir(filename):
+-                    LOGGER.debug("* Removing %s", path)
+-                    shutil.rmtree(filename)
+-
+-                elif os.path.exists(filename):
+-                    LOGGER.debug("* Removing %s", path)
+-                    os.remove(filename)
+-
+-            except OSError as e:
+-                # Keep it in the cache, so that we try again next time.
+-                LOGGER.error("Cannot remove file %s: %s", filename, e)
+-                continue
+-
+-            # Clear cache
+-            cache.pop(path, 0)
+-
+-        # Removing empty directories
+-        for root, dirs, files in os.walk(os.path.join(dir, folder, "outline")):
+-            for dir in dirs:
+-                newDir = os.path.join(root, dir)
++                same = False
++            if not same:
+                 try:
+-                    os.removedirs(newDir)
+-                    LOGGER.debug("* Removing empty directory: %s", newDir)
+-                except:
+-                    # Directory not empty, we don't remove.
+-                    pass
++                    writeFile(project, "1")  # Format number
++                except OSError as e:
++                    LOGGER.error("Cannot write file %s: %s", project, e)
++                    report.failed.append((project, e.strerror or str(e)))
+ 
+-        # Write the project file's content
+-        try:
+-            writeFile(project, "1")  # Format number
+-        except OSError as e:
+-            LOGGER.error("Cannot write file %s: %s", project, e)
+-            filesWithPermissionErrors.append("{} ({})".format(project, e.strerror or e))
++        # A normal save (or the first save of a new project) keeps what it knows about the
++        # folder, even if it failed. "Save as..." switches to the new folder only if it worked.
++        if path is None or report:
++            store = s
+ 
+-        if len(filesWithPermissionErrors) > 0:
++        if report.failed:
+             dlg = ListDialog(mw)
+             dlg.setModal(True)
+             dlg.setWindowTitle(dlg.tr("Files not saved"))
+             dlg.label.setText(dlg.tr("The following files could not be saved:"))
+-            for f in filesWithPermissionErrors:
+-                QListWidgetItem(f, dlg.listWidget)
++            for f, reason in report.failed:
++                QListWidgetItem("{} ({})".format(os.path.join(target, f), reason), dlg.listWidget)
+             dlg.open()
+-
+-        # Some files have not been written: the project is not (completely) saved.
+-        if filesWithPermissionErrors:
+-            return False
+-        return True
++        for f, reason in report.warnings:
++            LOGGER.warning("%s: %s", f, reason)
++        return report
+ 
+ 
+ def addWorldItem(root, mdl, parent=QModelIndex()):
+@@ -758,56 +1034,40 @@ def addPlotItem(root, mdl, parent=QModelIndex()):
+     return root
+ 
+ 
+-def exportOutlineItem(root):
++def exportOutlineItem(root, base=("outline",)):
+     """
+-    Takes an outline item, and returns three lists:
+-    1. of (`filename`, `content`), representing the whole tree of files to be written, in multimarkdown.
+-    2. of (`filename`, `filename`) listing files to be moved
+-    3. of `filename`, representing files to be removed.
+-
+-    @param root: OutlineItem
+-    @return: [(str, str)], [(str, str)], [str]
++    Returns the files of the outline items under root: [(path, content, owner)], in
++    multimarkdown. Paths are the same as outlineItemPath(), computed in linear time.
+     """
+-
+     files = []
+-    moves = []
+-    removes = []
+-
+-    k = 0
+-    for child in root.children():
+-        spath = os.path.join(*outlineItemPath(child))
+-
+-        k += 1
+-
+-        # Has the item been renamed?
+-        lp = child._lastPath
+-        if lp and spath != lp:
+-            moves.append((lp, spath))
+-            LOGGER.debug("%s has been renamed (%s → %s)", child.title(), lp,  spath)
+-            LOGGER.debug(" → We mark for moving: %s", lp)
+-
+-        # Updates item last's path
+-        child._lastPath = spath
+-
+-        # Generating content
++    children = root.children()
++    width = len(str(len(children)))
++    stems = [slugify(c.title())[:maxSlugLength] for c in children]
++    count = Counter(s.lower() for s in stems)
++    for row, child in enumerate(children):
++        name = "{ID}-{name}{ext}".format(ID=str(row).zfill(width),
++                                         name=fileStem(child, stems[row], count),
++                                         ext="" if child.type() == "folder" else ".md")
++        spath = base + (name,)
++        owner = ("o", child.ID())
+         if child.type() == "folder":
+-            fpath = os.path.join(spath, "folder.txt")
+-            content = outlineToMMD(child)
+-            files.append((fpath, content))
+-
++            files.append((os.path.join(*spath, "folder.txt"), outlineToMMD(child), owner))
+         elif child.type() == "md":
+-            content = outlineToMMD(child)
+-            files.append((spath, content))
+-
++            files.append((os.path.join(*spath), outlineToMMD(child), owner))
+         else:
+             LOGGER.debug("Unknown type: %s", child.type())
++        files += exportOutlineItem(child, spath)
++    return files
+ 
+-        f, m, r = exportOutlineItem(child)
+-        files += f
+-        moves += m
+-        removes += r
+ 
+-    return files, moves, removes
++def fileStem(item, stem, count):
++    """Siblings whose titles have the same file name (identical titles, titles that only
++    differ in non-ASCII letters or after maxSlugLength characters) get their ID appended:
++    then no reorder or move ever gives an item the file name another item had (#1320)."""
++    if count[stem.lower()] == 1:
++        return stem
++    suffix = "-" + str(item.ID())
++    return slugify(item.title())[:maxSlugLength - len(suffix)] + suffix
+ 
+ 
+ def outlineItemPath(item):
+@@ -824,17 +1084,12 @@ def outlineItemPath(item):
+         # Count the number of siblings for padding '0'
+         siblings = item.parent().childCount()
+ 
+-        # We check if multiple items have the same name
+-        # If so, we add "-ID" to their name
+-        siblingsNames = [s.title() for s in item.parent().children()]
+-        if siblingsNames.count(item.title()) > 1:
+-            title = "{}-{}".format(item.title(), item.ID())
+-        else:
+-            title = item.title()
+-
++        # Siblings with the same file name get their ID appended
++        count = Counter(slugify(s.title())[:maxSlugLength].lower()
++                        for s in item.parent().children())
+         name = "{ID}-{name}{ext}".format(
+             ID=str(item.row()).zfill(len(str(siblings))),
+-            name=slugify(title)[:maxSlugLength],
++            name=fileStem(item, slugify(item.title())[:maxSlugLength], count),
+             ext="" if item.type() == "folder" else ".md"
+         )
+         return outlineItemPath(item.parent()) + [name]
+@@ -844,7 +1099,8 @@ def outlineToMMD(item):
+     content = ""
+ 
+     # We don't want to write some datas (computed)
+-    exclude = [Outline.wordCount, Outline.goal, Outline.goalPercentage, Outline.revisions, Outline.text]
++    exclude = [Outline.wordCount, Outline.charCount, Outline.goal, Outline.goalPercentage,
++               Outline.revisions, Outline.text]
+     # We want to force some data even if they're empty
+     force = [Outline.compile]
+ 
+@@ -874,6 +1130,8 @@ def loadProject(project, zip=None):
+ 
+     mw = mainWindow()
+     errors = list()
++    global store
++    store = None
+ 
+     ####################################################################################################################
+     # Read and store everything in a dict
+@@ -898,6 +1156,7 @@ def loadProject(project, zip=None):
+         path = os.path.join(dir, folder, "")
+ 
+         files = {}
++        meta = {}  # relative path: (size, mtime, digest) as read
+         # Files and folders that cannot be read (relative path: reason)
+         notRead = OrderedDict()
+ 
+@@ -930,12 +1189,17 @@ def loadProject(project, zip=None):
+                 # tool, dangling symlink, path too long, invalid encoding...) is reported.
+                 filename = os.path.join(dirpath, f)
+                 try:
++                    with open(filename, "rb") as fo:
++                        raw = fo.read()
++                        st = os.fstat(fo.fileno())
+                     if f[-4:] in [".xml", "opml"]:
+-                        with open(filename, "rb") as fo:
+-                            files[os.path.join(p, f)] = fo.read()
++                        files[os.path.join(p, f)] = raw
+                     else:
+-                        with open(filename, 'rt', encoding="utf8") as fo:
+-                            files[os.path.join(p, f)] = fo.read()
++                        # Universal newlines, as text mode reads them
++                        files[os.path.join(p, f)] = raw.decode("utf8").replace(
++                            "\r\n", "\n").replace("\r", "\n")
++                    meta[os.path.join(p, f)] = (st.st_size, st.st_mtime_ns, digest(raw),
++                                                isRacy(st.st_mtime_ns))
+ 
+                 except (UnicodeDecodeError, OSError) as e:
+                     LOGGER.error("Cannot read file %s: %s", filename, e)
+@@ -944,7 +1208,6 @@ def loadProject(project, zip=None):
+                     if f == "folder.txt" and p:
+                         notRead[p] = reason(e)
+ 
+-        global cache, freshTarget, unreadable
+         errors += list(notRead)
+ 
+         # If the project folder, its main folders or any of the files at its root could not be
+@@ -955,21 +1218,14 @@ def loadProject(project, zip=None):
+         if failed or (notRead and not files):
+             LOGGER.error("Project %s cannot be loaded: some files cannot be read.", project)
+             showFilesNotLoaded(mw, path, notRead, failed=True)
+-            # Nothing of this project must be used by the next save (of another project)
+-            cache, freshTarget, unreadable = {}, True, {}
+             errors.append(project)
+             return errors
+ 
+         if notRead:
+             showFilesNotLoaded(mw, path, notRead)
+ 
+-        # Saves to cache (only if we loaded from disk and not zip)
+-        cache = files
+-        freshTarget = False
+         unreadable = dict(notRead)
+ 
+-        # FIXME: watch directory for changes
+-
+     # Sort files by keys
+     files = OrderedDict(sorted(files.items()))
+ 
+@@ -1119,10 +1375,11 @@ def loadProject(project, zip=None):
+     mdl = mw.mdlCharacter
+     LOGGER.debug("Reading Characters:")
+     # Only files in the top-level "characters" folder (not e.g. a scene titled "Main characters")
++    charPaths = {}
+     for f in [f for f in files if f.split(os.path.sep)[0] == "characters"]:
+         md, body = parseMMDFile(files[f])
+         c = mdl.addCharacter()
+-        c.lastPath = f
++        charPaths[f] = c
+ 
+         color = False
+         for desc, val in md:
+@@ -1185,8 +1442,23 @@ def loadProject(project, zip=None):
+ 
+ 
+ 
++    # Character IDs are file names and owners: they must be unique numbers (two machines
++    # that each added a character, merged with git, give two files with the same ID).
++    chars = mw.mdlCharacter.characters
++    used = {int(c.ID()) for c in chars if c.ID().isdigit()}
++    seen = set()
++    for c in chars:
++        if not c.ID().isdigit() or c.ID() in seen:
++            new = max(used | {-1}) + 1
++            used.add(new)
++            LOGGER.warning("Character %s has ID %r, which is not unique: it gets ID %d",
++                           c.name(), c.ID(), new)
++            c._data[Character.ID.value] = str(new)
++        seen.add(c.ID())
++
+     # We now just have to recursively add items.
+-    addTextItems(mdl, outline)
++    itemPaths = {}
++    addTextItems(mdl, outline, paths=itemPaths)
+ 
+     # Adds revisions
+     if "revisions.xml" in files:
+@@ -1197,23 +1469,17 @@ def loadProject(project, zip=None):
+     mdl.rootItem.checkIDs()
+ 
+     if not zip:
+-        # saveProject() removes every cached file that it has not written, as the file of a
+-        # removed item. Files that have not been loaded into the project (unknown files,
+-        # scenes without ID, folders without folder.txt, ...) must therefore not be in the
+-        # cache, otherwise they are deleted on the next save. They are left untouched.
+-        used = set(projectFiles)
+-        used.update(c.lastPath for c in mw.mdlCharacter.characters)
+-
+-        def addUsed(item):
+-            for c in item.children():
+-                used.add(c._lastPath)
+-                used.add(os.path.join(c._lastPath, "folder.txt"))
+-                addUsed(c)
+-
+-        addUsed(mdl.rootItem)
+-        for f in [f for f in cache if f not in used]:
+-            LOGGER.warning("File %s has not been loaded, it will be left untouched.", f)
+-            cache.pop(f)
++        # What the next save may replace or remove: the files loaded into the project. The
++        # others (unknown files, scenes without ID, folders without folder.txt...) are left
++        # untouched.
++        owners = {p: ("root", p) for p in projectFiles if p in meta}
++        owners.update({f: ("c", c.ID()) for f, c in charPaths.items()})
++        owners.update({f: ("o", i.ID()) for f, i in itemPaths.items()})
++        for f in files:
++            if f not in owners:
++                LOGGER.warning("File %s has not been loaded, it will be left untouched.", f)
++        store = FolderStore(os.path.join(dir, folder),
++                            {p: Entry(o, *meta[p]) for p, o in owners.items()}, unreadable)
+ 
+     return errors
+ 
+@@ -1240,7 +1506,7 @@ def showFilesNotLoaded(mw, path, notRead, failed=False):
+     dlg.open()
+ 
+ 
+-def addTextItems(mdl, odict, parent=None):
++def addTextItems(mdl, odict, parent=None, paths=None):
+     """
+     Adds a text / outline items from an OrderedDict.
+     @param mdl: model to add to
+@@ -1258,10 +1524,10 @@ def addTextItems(mdl, odict, parent=None):
+             # Adds folder
+             LOGGER.debug("{}* Adds {} to {} (folder)".format("  " * parent.level(), k, parent.title()))
+             item = outlineFromMMD(odict[k]["folder.txt"], parent=parent)
+-            item._lastPath = odict[k + ":lastPath"]
++            paths[os.path.join(odict[k + ":lastPath"], "folder.txt")] = item
+ 
+             # Read content
+-            addTextItems(mdl, odict[k], parent=item)
++            addTextItems(mdl, odict[k], parent=item, paths=paths)
+ 
+         if (":lastPath" in k) or (k == "folder.txt"):
+             continue
+@@ -1271,7 +1537,7 @@ def addTextItems(mdl, odict, parent=None):
+             try:
+                 LOGGER.debug("{}* Adds {} to {} (file)".format("  " * parent.level(), k, parent.title()))
+                 item = outlineFromMMD(odict[k], parent=parent)
+-                item._lastPath = odict[k + ":lastPath"]
++                paths[odict[k + ":lastPath"]] = item
+             except KeyError:
+                 LOGGER.error(f"Failed to add file {k}")
+         else:
+diff --git base/manuskript/mainWindow.py tree/manuskript/mainWindow.py
+index 0f7a461..fc0af3a 100644
+--- base/manuskript/mainWindow.py
++++ tree/manuskript/mainWindow.py
+@@ -1264,17 +1264,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
+         a link to the project file under another name, next to another folder."""
+         if not self.currentProject:
+             return False
+-        folder = os.path.splitext(filename)[0]
+-        current = os.path.splitext(self.currentProject)[0]
+-        try:
+-            a, b = os.stat(folder), os.stat(current)
+-        except OSError:  # One of them does not exist (e.g. a project saved to a single file)
+-            a = b = None
+-        # Some file systems have no file numbers (st_ino 0): then only the paths can tell.
+-        if a and a.st_ino:
+-            return os.path.samestat(a, b)
+-        return os.path.normcase(os.path.abspath(folder)) == \
+-            os.path.normcase(os.path.abspath(current))
++        from manuskript.load_save.version_1 import sameFolder
++        return sameFolder(os.path.splitext(filename)[0], os.path.splitext(self.currentProject)[0])
+ 
+     def submitPendingEdits(self):
+         """
+@@ -1298,20 +1289,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
+         # Before the save timer is stopped: submitting may restart it.
+         self.submitPendingEdits()
+ 
+-        if projectName:
+-            previousProject = self.currentProject
+-            previousCache = None
+-            # "Save as..." the project's own file (or another file whose folder is a link to
+-            # the project's folder) saves into the same folder: what the save code knows
+-            # about it stays true, as for a normal save. Starting with an empty cache would
+-            # first remove the project's own folders (as those of an older project), with
+-            # the files in them that could not be read when loading.
+-            if not self.isCurrentProjectFolder(projectName):
+-                # Everything is written to the new place
+-                previousCache = loadSave.saveCacheState()
+-                loadSave.clearSaveCache()
+-            self.currentProject = projectName
+-
+         # Stop the timer before saving: if auto-saving fails (bugs out?) we don't want it
+         # to keep trying and continuously hitting the failure condition. Nor do we want to
+         # risk a scenario where the timer somehow triggers a new save while saving.
+@@ -1324,20 +1301,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
+             LOGGER.error("There is no current project to save.")
+             return False
+ 
+-        r = False
+-        try:
+-            r = loadSave.saveProject()  # version=0
+-        finally:
+-            if projectName and not r:
+-                # "Save as..." failed: the project is still where it was, and the cache and
+-                # the items' last paths still describe that folder, so that the next save
+-                # goes there as before. (If the project was saved into its own folder, they
+-                # describe it as the failed save left it, as after a failed normal save.)
+-                self.currentProject = previousProject
+-                if previousCache is not None:
+-                    loadSave.restoreSaveCache(previousCache)
++        # "Save as...": the project stays where it was unless the save succeeds
++        r = loadSave.saveProject(path=projectName) if projectName else loadSave.saveProject()
+ 
+         if projectName and r:
++            self.currentProject = projectName
+             QSettings().setValue("lastProject", projectName)
+ 
+         projectName = os.path.basename(projectName or self.currentProject)
+diff --git base/manuskript/tests/load_save/helpers.py tree/manuskript/tests/load_save/helpers.py
+index c0ef25d..dbe6505 100644
+--- base/manuskript/tests/load_save/helpers.py
++++ tree/manuskript/tests/load_save/helpers.py
+@@ -23,6 +23,12 @@ def copySample(tmp_path):
+     return dst + ".msk"
+ 
+ 
++def relPath(item):
++    """The path (relative to the project folder) where item is saved."""
++    from manuskript.load_save import version_1
++    return os.path.join(*version_1.outlineItemPath(item))
++
++
+ def addItem(MW, parent, title, text="", folder=False, row=None):
+     item = outlineItem(title=title, _type="folder" if folder else "md")
+     if not folder:
+diff --git tree/manuskript/tests/load_save/test_final_probes.py tree/manuskript/tests/load_save/test_final_probes.py
+new file mode 100644
+index 0000000..dcc9bbf
+--- /dev/null
++++ tree/manuskript/tests/load_save/test_final_probes.py
+@@ -0,0 +1,300 @@
++"""Probes for FINAL-save-design.md (judges' scenarios, adapted to the "-ID" suffix names)."""
++import os
++
++from manuskript import loadSave
++from manuskript.enums import Outline, Character
++from manuskript.load_save import version_1
++from manuskript.tests.load_save.helpers import addItem, drag, tree, relPath
++
++
++def _discardAndReload(MW, monkeypatch):
++    path = MW.currentProject
++    MW.projectDirty = False
++    monkeypatch.setattr(loadSave, "saveProject", lambda *a, **k: False)
++    monkeypatch.setattr(MW, "confirmCloseWithoutSaving", lambda: True, raising=False)
++    MW.closeProject()
++    monkeypatch.undo()
++    MW.loadProject(path)
++    assert MW.currentProject == path
++
++
++def _failWrite(monkeypatch, paths):
++    realWrite = version_1.writeFile
++    paths = [os.path.realpath(p) for p in paths]
++
++    def failingWrite(filename, content, *args, **kwargs):
++        if os.path.realpath(filename) in paths:
++            raise PermissionError(13, "Permission denied (in use by another program)", filename)
++        return realWrite(filename, content, *args, **kwargs)
++
++    monkeypatch.setattr(version_1, "writeFile", failingWrite)
++
++
++def _texts(MW):
++    return sorted(t[4] for t in tree(MW) if t[3] == "md")
++
++
++def test_same_slug_names_have_id(emptyProject):
++    MW = emptyProject
++    chapter = addItem(MW, MW.mdlOutline.rootItem, "Kapitel", folder=True)
++    a = addItem(MW, chapter, "Grüße", "A")
++    b = addItem(MW, chapter, "Größe", "B")
++    c = addItem(MW, chapter, "Später", "C")
++    names = [os.path.basename(relPath(i)) for i in (a, b, c)]
++    assert names == ["0-Gr--e-%s.md" % a.ID(), "1-Gr--e-%s.md" % b.ID(), "2-Sp-ter.md"]
++    # linear paths == outlineItemPath
++    files = version_1.exportOutlineItem(MW.mdlOutline.rootItem)
++    assert sorted(p for p, c_, o in files) == sorted(
++        [os.path.join(relPath(chapter), "folder.txt")] + [relPath(i) for i in (a, b, c)])
++
++
++def test_swap_same_slug_failed_write(emptyProject, monkeypatch):
++    MW = emptyProject
++    chapter = addItem(MW, MW.mdlOutline.rootItem, "Kapitel", folder=True)
++    for title in ["Grüße", "Größe"]:
++        addItem(MW, chapter, title, "Text of " + title)
++    assert loadSave.saveProject()
++    drag(MW, chapter.child(1), chapter, 0)          # Größe, Grüße
++    folder = MW.currentProject[:-4]
++    _failWrite(monkeypatch, [os.path.join(folder, relPath(chapter.child(1)))])
++    assert not loadSave.saveProject()
++    monkeypatch.undo()
++    _discardAndReload(MW, monkeypatch)
++    assert "Text of Grüße" in _texts(MW) and "Text of Größe" in _texts(MW)
++
++
++def test_chain_same_slug_failed_write(emptyProject, monkeypatch):
++    MW = emptyProject
++    chapter = addItem(MW, MW.mdlOutline.rootItem, "Kapitel", folder=True)
++    for title in ["Grüße", "Größe", "Später"]:
++        addItem(MW, chapter, title, "Text of " + title)
++    assert loadSave.saveProject()
++    drag(MW, chapter.child(2), chapter, 0)
++    folder = MW.currentProject[:-4]
++    _failWrite(monkeypatch, [os.path.join(folder, relPath(chapter.child(2)))])
++    assert not loadSave.saveProject()
++    monkeypatch.undo()
++    _discardAndReload(MW, monkeypatch)
++    assert {"Text of Grüße", "Text of Größe", "Text of Später"} <= set(_texts(MW))
++
++
++def test_cross_folder_cycle_is_refused_and_lossless(emptyProject, monkeypatch):
++    """Two lone same-slug scenes at the same row of two folders swap folders: a pure
++    cycle. Neither is written; nothing is lost; renaming one of them resolves it."""
++    MW = emptyProject
++    root = MW.mdlOutline.rootItem
++    f1 = addItem(MW, root, "Eins", folder=True)
++    f2 = addItem(MW, root, "Zwei", folder=True)
++    addItem(MW, f1, "Grüße", "A")
++    addItem(MW, f2, "Größe", "B")
++    assert loadSave.saveProject()
++    a, b = f1.child(0), f2.child(0)
++    drag(MW, a, f2, 0)
++    drag(MW, f2.child(1), f1, 0)
++    assert [c.title() for c in f1.children()] == ["Größe"]
++    assert [c.title() for c in f2.children()] == ["Grüße"]
++    r = loadSave.saveProject()
++    assert not r and any("same file name" in reason for p, reason in r.failed)
++    # discard: both texts still there
++    folder = MW.currentProject[:-4]
++    MW.mdlOutline.setData(f1.child(0).index(Outline.title), "Größe 2")
++    assert loadSave.saveProject()
++    _discardAndReload(MW, monkeypatch)
++    assert sorted(_texts(MW)) == ["A", "B"]
++
++
++def test_duplicate_character_ids_rename_failed_write(sampleProject, monkeypatch):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    chars = os.path.join(folder, "characters")
++    new = max(int(c.ID()) for c in MW.mdlCharacter.characters) + 1
++    for name in ["Anna", "Bert"]:
++        with open(os.path.join(chars, "%d-%s.txt" % (new, name)), "w", encoding="utf8") as f:
++            f.write("Name:                %s\nID:                  %d\n"
++                    "Notes:               Notes of %s\n" % (name, new, name))
++    path = MW.currentProject
++    MW.closeProject()
++    MW.loadProject(path)
++    named = {c.name(): c for c in MW.mdlCharacter.characters}
++    assert named["Anna"].ID() != named["Bert"].ID()
++    assert loadSave.saveProject()
++    MW.mdlCharacter.setData(named["Anna"].index(Character.name), "Anne")
++    _failWrite(monkeypatch, [os.path.join(chars, "%s-Anne.txt" % named["Anna"].ID())])
++    assert not loadSave.saveProject()
++    monkeypatch.undo()
++    _discardAndReload(MW, monkeypatch)
++    notes = sorted(str(c._data.get(Character.notes.value, "")) for c in MW.mdlCharacter.characters)
++    assert "Notes of Anna" in notes and "Notes of Bert" in notes
++
++
++def test_pulled_scene_in_deleted_chapter_stays_loadable(sampleProject):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    part = MW.mdlOutline.rootItem.child(0)
++    chapter = part.child(1)
++    chapterDir = os.path.join(folder, relPath(chapter))
++    pulled = os.path.join(chapterDir, "9-Pulled_scene.md")
++    with open(pulled, "w", encoding="utf8") as f:
++        f.write("title:          Pulled scene\nID:             9000\ntype:           md\n\n\n"
++                "Written on the other machine.\n")
++    MW.mdlOutline.removeIndex(chapter.index())
++    r = loadSave.saveProject()
++    path = MW.currentProject
++    MW.projectDirty = False
++    MW.closeProject()
++    MW.loadProject(path)
++    texts = [t[4] for t in tree(MW)]
++    assert any("Written on the other machine." in (t or "") for t in texts) or not r
++
++
++def test_failed_new_folder_txt_writes_nothing_below_it(sampleProject, monkeypatch):
++    """No orphans: when the folder.txt of a renamed chapter cannot be written, none of its
++    scenes are written at the new place (they would not be loaded)."""
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    chapter = MW.mdlOutline.rootItem.child(0).child(1)
++    MW.mdlOutline.setData(chapter.index(Outline.title), "Pentecost")
++    newDir = os.path.join(folder, relPath(chapter))
++    _failWrite(monkeypatch, [os.path.join(newDir, "folder.txt")])
++    r = loadSave.saveProject()
++    monkeypatch.undo()
++    assert not r
++    assert not os.path.exists(newDir) or os.listdir(newDir) == []
++    MW.projectDirty = False
++
++
++def test_crlf_checkout_is_not_rewritten_nor_a_conflict(sampleProject):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    scene = MW.mdlOutline.rootItem.child(0).child(0).child(0)
++    f = os.path.join(folder, relPath(scene))
++    with open(f, "rb") as fo:
++        data = fo.read()
++    with open(f, "wb") as fo:
++        fo.write(data.replace(b"\n", b"\r\n"))
++    mtime = os.stat(f).st_mtime_ns
++    assert loadSave.saveProject()
++    assert os.stat(f).st_mtime_ns == mtime     # not rewritten
++    MW.mdlOutline.setData(scene.index(Outline.text), "edited")
++    assert loadSave.saveProject()              # no conflict: same content as recorded
++    with open(f, "rb") as fo:
++        assert b"\r\n" not in fo.read()
++
++
++def test_external_change_is_a_conflict(sampleProject):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    scene = MW.mdlOutline.rootItem.child(0).child(0).child(0)
++    f = os.path.join(folder, relPath(scene))
++    with open(f, "a", encoding="utf8") as fo:
++        fo.write("pulled\n")
++    MW.mdlOutline.setData(scene.index(Outline.text), "edited")
++    r = loadSave.saveProject()
++    assert not r and r.conflicts
++    with open(f, encoding="utf8") as fo:
++        assert fo.read().endswith("pulled\n")
++    MW.projectDirty = False
++
++
++def test_noop_save_writes_nothing(sampleProject):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    before = {}
++    for d, ds, fs in os.walk(folder):
++        for n in fs:
++            before[os.path.join(d, n)] = os.stat(os.path.join(d, n)).st_mtime_ns
++    assert loadSave.saveProject()
++    path = MW.currentProject
++    MW.closeProject()
++    MW.loadProject(path)
++    assert loadSave.saveProject()
++    after = {}
++    for d, ds, fs in os.walk(folder):
++        for n in fs:
++            after[os.path.join(d, n)] = os.stat(os.path.join(d, n)).st_mtime_ns
++    assert after == before
++
++
++def test_loadable_files_matches_loader(sampleProject):
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    extra = {
++        "outline/0-Jerusalem/0-Chapter_1/9-my_new_scene.md": "title: x\ntype: md\n\n\nno id\n",
++        "outline/0-Jerusalem/9-Lost_chapter/0-scene.md": "title: y\nID: 900\ntype: md\n\n\nz\n",
++        "characters/notes.txt": "Name: Notes\n",
++    }
++    for f, content in extra.items():
++        f = os.path.join(folder, *f.split("/"))
++        os.makedirs(os.path.dirname(f), exist_ok=True)
++        with open(f, "w", encoding="utf8") as fo:
++            fo.write(content)
++    path = MW.currentProject
++    MW.closeProject()
++    MW.loadProject(path)
++    texts = {}
++    for d, ds, fs in os.walk(folder):
++        rel = os.path.relpath(d, folder)
++        rel = "" if rel == "." else rel
++        for n in fs:
++            p = os.path.join(rel, n)
++            if n[:1] == "." or (not rel and n not in version_1.projectFiles):
++                continue
++            with open(os.path.join(d, n), "rb") as fo:
++                raw = fo.read()
++            texts[p] = raw if n[-4:] in (".xml", "opml") else raw.decode("utf8")
++    assert version_1.loadableFiles(texts) == set(version_1.store.owned)
++
++
++def test_save_as_onto_older_project_with_character_without_id(sampleProject, tmp_path):
++    """judge-effort probe: an ID-less character file of an older project must not be
++    loaded into the new project after "Save as" onto it."""
++    MW = sampleProject
++    target = os.path.join(str(tmp_path), "older")
++    os.makedirs(os.path.join(target, "characters"))
++    with open(os.path.join(target, "MANUSKRIPT"), "w") as f:
++        f.write("1")
++    with open(os.path.join(target, "characters", "9-Ghost.txt"), "w") as f:
++        f.write("Name: Ghost of the older project\n")
++    names = sorted(c.name() for c in MW.mdlCharacter.characters)
++    assert MW.saveDatas(target + ".msk")
++    MW.closeProject()
++    MW.loadProject(target + ".msk")
++    after = sorted(c.name() for c in MW.mdlCharacter.characters)
++    MW.closeProject()
++    assert after == names
++
++
++def test_case_variant_stems_get_id(emptyProject):
++    """Stems are compared ignoring case: on a case-insensitive file system, swapping
++    'Intro' and 'intro' would otherwise be a cycle (and is refused)."""
++    MW = emptyProject
++    chapter = addItem(MW, MW.mdlOutline.rootItem, "Kapitel", folder=True)
++    a = addItem(MW, chapter, "Intro", "A")
++    b = addItem(MW, chapter, "intro", "B")
++    names = [os.path.basename(relPath(i)) for i in (a, b)]
++    assert names == ["0-Intro-%s.md" % a.ID(), "1-intro-%s.md" % b.ID()]
++    files = version_1.exportOutlineItem(MW.mdlOutline.rootItem)
++    assert sorted(p for p, c_, o in files) == sorted(
++        [os.path.join(relPath(chapter), "folder.txt")] + [relPath(i) for i in (a, b)])
++
++
++def test_normal_save_into_replaced_folder_is_a_conflict(sampleProject):
++    """The project folder is replaced on disk while open (moved away, cloned again, one scene
++    changed there). A normal save must compare with the store of the open project: conflict,
++    nothing overwritten. It must not treat the folder as an 'older project'."""
++    import shutil
++    MW = sampleProject
++    folder = MW.currentProject[:-4]
++    assert loadSave.saveProject()
++    shutil.move(folder, folder + "-bak")
++    shutil.copytree(folder + "-bak", folder)
++    scene = next(os.path.join(d, f) for d, dn, fn in sorted(os.walk(os.path.join(folder, "outline")))
++                 for f in sorted(fn) if f.endswith(".md"))
++    with open(scene, "a", encoding="utf8") as f:
++        f.write("\nWritten on the other computer.\n")
++    MW.mdlFlatData.item(0, 0).setText("A new title")
++    r = loadSave.saveProject()
++    assert not r and any(p == os.path.relpath(scene, folder) for p, k in r.conflicts)
++    with open(scene, encoding="utf8") as f:
++        assert f.read().endswith("Written on the other computer.\n")
++    MW.projectDirty = False  # the save on close would be blocked by the conflict too
+diff --git base/manuskript/tests/load_save/test_save_load_regressions.py tree/manuskript/tests/load_save/test_save_load_regressions.py
+index e2c2891..88b2f63 100644
+--- base/manuskript/tests/load_save/test_save_load_regressions.py
++++ tree/manuskript/tests/load_save/test_save_load_regressions.py
+@@ -11,7 +11,7 @@ import pytest
+ from manuskript import loadSave
+ from manuskript.enums import Outline
+ 
+-from manuskript.tests.load_save.helpers import copySample, addItem, reload, shownDialogs
++from manuskript.tests.load_save.helpers import copySample, addItem, reload, shownDialogs, relPath
+ 
+ 
+ def characters(MW):
+@@ -77,9 +77,12 @@ def test_files_not_loaded_are_not_deleted(MW, tmp_path):
+     finally:
+         MW.closeProject()
+ 
++    # Those in the renamed folder have moved with it (B7)
+     for f, content in extra.items():
++        f = f.replace("outline/0-Jerusalem/", "outline/0-Renamed_folder/")
+         with open(os.path.join(folder, *f.split("/")), encoding="utf8") as fo:
+             assert fo.read() == content
++    assert not os.path.exists(os.path.join(folder, "outline", "0-Jerusalem"))
+ 
+ 
+ def makeUserFolder(path):
+@@ -156,9 +159,9 @@ def test_loaded_project_with_empty_cache_is_not_wiped(MW, tmp_path):
+     try:
+         assert MW.currentProject == path
+         from manuskript.load_save import version_1
+-        version_1.cache.clear()
+-        assert loadSave.saveProject()
+-        assert loadSave.saveProject()
++        version_1.store.owned.clear()
++        assert not loadSave.saveProject()
++        assert not loadSave.saveProject()
+     finally:
+         MW.closeProject()
+ 
+@@ -269,7 +272,7 @@ def test_failed_write_keeps_previous_file(sampleProject, monkeypatch):
+     from manuskript.load_save import version_1
+     MW = sampleProject
+     scene = lastText(MW)
+-    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
++    filename = os.path.join(MW.currentProject[:-4], relPath(scene))
+     with open(filename, encoding="utf8") as f:
+         previous = f.read()
+     filesBefore = sorted(os.listdir(os.path.dirname(filename)))
+@@ -317,7 +320,7 @@ def test_save_keeps_symlinks_and_modes(sampleProject, tmp_path):
+     import stat
+     MW = sampleProject
+     scene = lastText(MW)
+-    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
++    filename = os.path.join(MW.currentProject[:-4], relPath(scene))
+     target = os.path.join(str(tmp_path), "elsewhere.md")
+     shutil.move(filename, target)
+     try:
+@@ -341,7 +344,7 @@ def test_read_only_file_is_not_replaced(sampleProject):
+     """A file that is not writable is reported as not saved, it is not replaced."""
+     MW = sampleProject
+     scene = lastText(MW)
+-    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
++    filename = os.path.join(MW.currentProject[:-4], relPath(scene))
+     with open(filename, encoding="utf8") as f:
+         previous = f.read()
+     os.chmod(filename, 0o444)
+@@ -363,7 +366,7 @@ def test_save_without_chmod_support(sampleProject, monkeypatch):
+     import errno
+     MW = sampleProject
+     scene = lastText(MW)
+-    filename = os.path.join(MW.currentProject[:-4], scene._lastPath)
++    filename = os.path.join(MW.currentProject[:-4], relPath(scene))
+ 
+     def chmod(path, *args, **kwargs):
+         raise OSError(errno.ENOTSUP, os.strerror(errno.ENOTSUP), path)
+@@ -377,7 +380,7 @@ def test_save_without_chmod_support(sampleProject, monkeypatch):
+     assert not [f for f in os.listdir(os.path.dirname(filename)) if f.endswith(".tmp")]
+ 
+ 
+-def test_write_error_does_not_stop_save(sampleProject):
++def test_write_error_does_not_stop_save(sampleProject, monkeypatch):
+     """A file that cannot be written is reported, the other files are still written."""
+     MW = sampleProject
+     mdl = MW.mdlOutline
+@@ -385,20 +388,25 @@ def test_write_error_does_not_stop_save(sampleProject):
+     first = mdl.rootItem.child(0).child(0).child(0)
+     last = lastText(MW)
+ 
+-    # Something prevents writing the first scene's file (here: a folder with that name)
+-    path = os.path.join(folder, first._lastPath)
+-    os.remove(path)
+-    os.mkdir(path)
+-    open(os.path.join(path, "file"), "w").close()
++    # Something prevents writing the first scene's file
++    from manuskript.load_save import version_1
++    path = os.path.join(folder, relPath(first))
++    realWrite = version_1.writeFile
++
++    def failingWrite(filename, *args, **kwargs):
++        if filename == path:
++            raise IsADirectoryError(21, "Is a directory", filename)
++        return realWrite(filename, *args, **kwargs)
++
+     mdl.setData(first.index(Outline.text), "Not saved")
+     mdl.setData(last.index(Outline.text), "Text written today")
+-
+-    assert not loadSave.saveProject()
+-    with open(os.path.join(folder, last._lastPath), encoding="utf8") as f:
++    with monkeypatch.context() as m:
++        m.setattr(version_1, "writeFile", failingWrite)
++        assert not loadSave.saveProject()
++    with open(os.path.join(folder, relPath(last)), encoding="utf8") as f:
+         assert f.read().endswith("Text written today")
+ 
+     # The problem is fixed: the next save writes the file
+-    shutil.rmtree(path)
+     assert loadSave.saveProject()
+     with open(path, encoding="utf8") as f:
+         assert f.read().endswith("Not saved")
+diff --git base/manuskript/tests/load_save/test_save_moves.py tree/manuskript/tests/load_save/test_save_moves.py
+index 7e18be0..231a72e 100644
+--- base/manuskript/tests/load_save/test_save_moves.py
++++ tree/manuskript/tests/load_save/test_save_moves.py
+@@ -9,7 +9,7 @@ import pytest
+ from manuskript import loadSave
+ from manuskript.enums import Outline
+ 
+-from manuskript.tests.load_save.helpers import addItem, drag, duplicate, reload, tree
++from manuskript.tests.load_save.helpers import addItem, drag, duplicate, reload, tree, relPath
+ 
+ 
+ def test_reorder_titles_with_same_slug(emptyProject):
+@@ -38,7 +38,6 @@ def test_duplicate_saved_folder_and_save_twice(sampleProject):
+     duplicate(MW, root.child(0))
+     copy = root.child(root.childCount() - 1)
+     assert copy.title() == root.child(0).title()
+-    assert copy._lastPath == ""
+ 
+     assert loadSave.saveProject()
+     assert loadSave.saveProject()
+@@ -97,14 +96,6 @@ def test_rename_only_case(sampleProject):
+     assert after == before
+ 
+ 
+-def test_copied_item_has_no_lastPath(sampleProject):
+-    folder = sampleProject.mdlOutline.rootItem.child(0)
+-    assert folder._lastPath
+-    copy = folder.copy()
+-    assert copy._lastPath == ""
+-    assert all(c._lastPath == "" for c in copy.children())
+-
+-
+ def test_rename_only_case_insensitive_fs(sampleProject, monkeypatch):
+     """On a case-insensitive file system, the old file of an item renamed only in case is
+     the file that has just been written: it must not be removed."""
+@@ -113,7 +104,7 @@ def test_rename_only_case_insensitive_fs(sampleProject, monkeypatch):
+     MW = sampleProject
+     folder = MW.currentProject[:-4]
+     scene = MW.mdlOutline.rootItem.child(0).child(0).child(0)
+-    old = os.path.join(folder, scene._lastPath)
++    old = os.path.join(folder, relPath(scene))
+     MW.mdlOutline.setData(scene.index(Outline.title), scene.title().upper())
+     new = os.path.join(folder, *version_1.outlineItemPath(scene))
+     assert new != old and new.lower() == old.lower()
+@@ -145,7 +136,7 @@ def test_failed_write_keeps_old_files_of_renamed_folder(sampleProject, monkeypat
+     MW = sampleProject
+     folder = MW.currentProject[:-4]
+     chapter = MW.mdlOutline.rootItem.child(0).child(0)
+-    oldFolder = os.path.join(folder, chapter._lastPath)
++    oldFolder = os.path.join(folder, relPath(chapter))
+     oldFiles = {}
+     for f in os.listdir(oldFolder):
+         with open(os.path.join(oldFolder, f), encoding="utf8") as fo:
+@@ -195,8 +186,8 @@ def test_failed_write_removes_other_old_files(sampleProject, monkeypatch):
+     MW.mdlOutline.removeIndex(part1.child(part1.childCount() - 1).index())
+     # A renamed chapter whose new files cannot be written
+     chapter = part2.child(0)
++    oldFolder = os.path.join(folder, relPath(chapter))
+     MW.mdlOutline.setData(chapter.index(Outline.title), "Not written")
+-    oldFolder = os.path.join(folder, chapter._lastPath)
+     newFolder = os.path.realpath(os.path.join(folder, *version_1.outlineItemPath(chapter)))
+     realOpen = open
+ 
+@@ -266,7 +257,7 @@ def test_failed_write_keeps_items_moved_out_of_a_changed_parent(sampleProject, m
+     source, target = root.child(0), root.child(1)
+     chapter = source.child(0)
+     movedIDs = _ids(chapter)
+-    oldFolder = os.path.join(folder, chapter._lastPath)
++    oldFolder = os.path.join(folder, relPath(chapter))
+ 
+     drag(MW, chapter, target, target.childCount())
+     if action == "delete":
+diff --git base/manuskript/tests/load_save/test_unreadable_files.py tree/manuskript/tests/load_save/test_unreadable_files.py
+index 8536003..756a830 100644
+--- base/manuskript/tests/load_save/test_unreadable_files.py
++++ tree/manuskript/tests/load_save/test_unreadable_files.py
+@@ -248,7 +248,7 @@ def test_new_project_after_failed_load(MW, tmp_path, monkeypatch):
+     monkeypatch.undo()
+ 
+     from manuskript.load_save import version_1
+-    assert version_1.cache == {} and version_1.unreadable == {} and version_1.freshTarget
++    assert version_1.store is None
+     MW.welcome.createFile(os.path.join(str(tmp_path), "new.msk"), overwrite=True)
+     try:
+         assert MW.currentProject
+@@ -408,8 +408,10 @@ def test_unreadable_scene_that_cannot_be_moved(MW, tmp_path, monkeypatch):
+         monkeypatch.setattr(os, "replace", replace)
+         assert loadSave.saveProject()
+         assert loadSave.saveProject()
+-        monkeypatch.undo()
++        assert os.path.isfile(os.path.join(os.path.dirname(scene), "folder.txt"))
++        MW.projectDirty = False
+     finally:
++        monkeypatch.undo()
+         MW.closeProject()
+ 
+     assert os.path.isfile(os.path.join(os.path.dirname(scene), "folder.txt"))
+diff --git base/manuskript/tests/test_mainWindow_load_save.py tree/manuskript/tests/test_mainWindow_load_save.py
+index 331247b..94d9489 100644
+--- base/manuskript/tests/test_mainWindow_load_save.py
++++ tree/manuskript/tests/test_mainWindow_load_save.py
+@@ -16,13 +16,13 @@ def test_load_damaged_project_does_not_raise(MWNoProject, tmp_path, monkeypatch)
+     path = copySample(tmp_path)
+ 
+     def loadProject(project):
+-        version_1.cache = {"infos.txt": "stale"}
++        version_1.store = object()
+         raise ValueError("damaged project")
+ 
+     monkeypatch.setattr(loadSave, "loadProject", loadProject)
+     MW.loadProject(path)
+     assert MW.currentProject is None
+-    assert version_1.cache == {}
++    assert version_1.store is None
+ 
+ 
+ def test_load_project_with_truncated_settings(MWNoProject, tmp_path):
+diff --git base/manuskript/tests/ui/test_saveAsFailure.py tree/manuskript/tests/ui/test_saveAsFailure.py
+index 562404a..c962095 100644
+--- base/manuskript/tests/ui/test_saveAsFailure.py
++++ tree/manuskript/tests/ui/test_saveAsFailure.py
+@@ -51,7 +51,7 @@ def project(MW, tmp_path, monkeypatch):
+         m.setattr(version_1, "open", failingOpen, raising=False)
+         MW.loadProject(path)
+     assert MW.currentProject == path
+-    assert version_1.unreadable
++    assert version_1.store.unreadable
+ 
+     QSettings().setValue("recentFiles", [path])
+     yield path
+@@ -62,7 +62,8 @@ def project(MW, tmp_path, monkeypatch):
+ 
+ def cacheState():
+     """What the save cache knows about the project folder."""
+-    return dict(version_1.cache), version_1.freshTarget, dict(version_1.unreadable)
++    s = version_1.store
++    return s, dict(s.owned), dict(s.unreadable)
+ 
+ 
+ def unreadableFile(path):
+@@ -168,12 +169,9 @@ def test_save_as_fails_while_writing(MW, project, tmp_path, monkeypatch):
+     assertSaveGoesToProject(MW, path)
+ 
+ 
+-@pytest.mark.parametrize("readOnly, nameOnly", [("", False), ("characters", False),
+-                                               ("characters", True)],
+-                         ids=["read-only folder", "read-only characters folder",
+-                              "error with the file name only"])
+-def test_save_as_into_older_read_only_project(MW, project, tmp_path, monkeypatch, readOnly,
+-                                              nameOnly):
++@pytest.mark.parametrize("readOnly", ["", "characters"],
++                         ids=["read-only folder", "read-only characters folder"])
++def test_save_as_into_older_read_only_project(MW, project, tmp_path, monkeypatch, readOnly):
+     """The folder of the new project holds an older Manuskript project, whose files
+     cannot all be removed."""
+     path = project
+@@ -189,36 +187,20 @@ def test_save_as_into_older_read_only_project(MW, project, tmp_path, monkeypatch
+     with open(os.path.join(folder, "MANUSKRIPT"), "w") as f:
+         f.write("1")
+     makeReadOnly(os.path.join(folder, readOnly))
+-    realRmtree = shutil.rmtree
+ 
+-    def rmtree(path, *args, **kwargs):
+-        try:
+-            realRmtree(path, *args, **kwargs)
+-        except OSError as e:
+-            # As with Python 3.11 (Python 3.13 names the folder)
+-            e.filename = "0-Someone.txt"
+-            raise
+-
+-    with monkeypatch.context() as m:
+-        if nameOnly:
+-            m.setattr(version_1.shutil, "rmtree", rmtree)
+-        warnings, shown = saveAs(MW, monkeypatch, target)
++    warnings, shown = saveAs(MW, monkeypatch, target)
+ 
+     assertProjectStaysWhereItWas(MW, path, title, cache)
+-    if readOnly:
+-        # The outline folder was removed before the error
+-        assert sorted(os.listdir(folder)) == ["MANUSKRIPT", "characters"]
+-        failed = os.path.join(folder, "characters")
+-    else:
+-        assert sorted(os.listdir(folder)) == ["MANUSKRIPT", "characters", "outline"]
+-        failed = os.path.join(folder, "outline")
++    # Nothing of the older project has been removed
++    with open(os.path.join(folder, "characters", "0-Someone.txt")) as f:
++        assert f.read() == "Name: Someone\n"
+     assert not os.path.exists(target)
+-    # The user is told why, once, without claiming that nothing was removed
++    # The user is told which files were not saved, once
+     assert warnings == []
+-    assert len(shown) == 1 and shown[0][0] == "Project not saved"
+-    assert "could not all be removed (some of them may have been removed already)" in \
+-        shown[0][1]
+-    assert shown[0][2] == ["{} ({})".format(failed, os.strerror(errno.EACCES))]
++    assert len(shown) == 1 and shown[0][0] == "Files not saved"
++    sub = os.path.join(folder, readOnly, "")
++    assert shown[0][2] and all(i.startswith(sub) and i.endswith(
++        "({})".format(os.strerror(errno.EACCES))) for i in shown[0][2])
+ 
+     assertSaveGoesToProject(MW, path)
+ 
+@@ -231,7 +213,7 @@ def test_failed_save_as_keeps_the_moves(MW, project, tmp_path, monkeypatch):
+     MW.mdlOutline.setData(chapter1(MW).index(Outline.title), "Chapter One")
+     character = MW.mdlCharacter.characters[0]
+     MW.mdlCharacter.setData(character.index(Character.name), "Someone else")
+-    lastPaths = character.lastPath, chapter1(MW)._lastPath, chapter1(MW).child(0)._lastPath
++    cache = cacheState()
+     target = str(tmp_path / "copy.msk")
+     # Only one file cannot be written: the renamed items are written at the new place
+     realWrite = version_1.writeFile
+@@ -248,8 +230,7 @@ def test_failed_save_as_keeps_the_moves(MW, project, tmp_path, monkeypatch):
+     assert MW.currentProject == path
+     assert len(shown) == 1 and shown[0][0] == "Files not saved"
+     assert os.path.exists(os.path.join(target[:-4], "outline", "0-Jerusalem", "0-Chapter_One"))
+-    assert (character.lastPath, chapter1(MW)._lastPath,
+-            chapter1(MW).child(0)._lastPath) == lastPaths
++    assert cacheState() == cache
+ 
+     assert MW.saveDatas()
+     MW.closeProject()
