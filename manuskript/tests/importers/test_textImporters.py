@@ -81,3 +81,77 @@ def test_folderImportLatin1(runImporter, tmp_path, monkeypatch):
         ("latin1", "Grüße aus Köln.\n"), ("utf8", "Hello.\n")]
     assert len(shown) == 1
     assert "binary.txt" in shown[0][1]
+
+
+def importMarkdown(runImporter, text):
+    items = runImporter(markdownImporter, fromString=text)
+    return [(i.title(), i.type(), i.text().strip()) for i in items]
+
+
+def test_markdownHeaders(runImporter):
+    assert importMarkdown(runImporter,
+                          "# Part\n\n## Chapter 1 ##\n\nText 1.\n\n"
+                          "   ## Chapter 2\n\nText 2.\n") == [
+        ("Part", "folder", ""),
+        ("Chapter 1", "md", "Text 1."),
+        ("Chapter 2", "md", "Text 2."),
+    ]
+
+
+def test_markdownHeadersWithoutSpace(runImporter):
+    """Older versions and the editor accept "#Title" as a header."""
+    assert importMarkdown(runImporter,
+                          "#Chapter 1\n\nText.\n\n##Scene 1\n\nMore.\n") == [
+        ("Chapter 1", "folder", ""),
+        ("Chapter 1", "md", "Text."),
+        ("Scene 1", "md", "More."),
+    ]
+
+
+def test_markdownSceneBreaksAreNotHeaders(runImporter):
+    text = ("# Chapter 1\n\nScene one.\n\n###\n\nScene two.\n\n# # #\n\n"
+            "Scene three.\n\n#\n\nScene four.\n\n  #  *  *\n\nEnd.\n")
+    items = importMarkdown(runImporter, text)
+    assert items == [("Chapter 1", "md", text[len("# Chapter 1\n\n"):].strip())]
+
+
+def test_markdownTildeSceneBreaks(runImporter):
+    """"~~~" lines are scene breaks, not code fences."""
+    text = ("# Chapter 1\n\nScene one.\n\n~~~\n\nScene two.\n\n"
+            "# Chapter 2\n\nScene three.\n\n~~~\n\nScene four.\n\n"
+            "# Chapter 3\n\nEnd.\n")
+    assert [i[0] for i in importMarkdown(runImporter, text)] == [
+        "Chapter 1", "Chapter 2", "Chapter 3"]
+
+
+def test_markdownUnclosedCodeFence(runImporter):
+    text = ("# Chapter 1\n\nScene one.\n\n```\n\nScene two.\n\n"
+            "# Chapter 2\n\nEnd.\n")
+    assert importMarkdown(runImporter, text) == [
+        ("Chapter 1", "md", "Scene one.\n\n```\n\nScene two."),
+        ("Chapter 2", "md", "End.")]
+
+
+def test_markdownLongerCodeFence(runImporter):
+    """A fence is only closed by a fence at least as long."""
+    text = "# A\n\n````\n```\n# inside\n````\n\n# B\n\nx\n"
+    assert importMarkdown(runImporter, text) == [
+        ("A", "md", "````\n```\n# inside\n````"), ("B", "md", "x")]
+
+
+def test_markdownCodeFence(runImporter):
+    text = "# Chapter\n\nShe wrote:\n\n```\n# not a header\n~~~\n```\n\nEnd.\n"
+    assert importMarkdown(runImporter, text) == [
+        ("Chapter", "md", "She wrote:\n\n```\n# not a header\n~~~\n```\n\nEnd.")]
+
+
+def test_markdownHeadersCRLF(runImporter):
+    """pandoc writes CRLF line endings on Windows."""
+    text = ("# Chapter 1 #\n\nText 1.\n\nChapter 2\n=========\n\n"
+            "```\n# not a header\n```\n\n## Scene 1\n\nEnd.\n")
+    assert importMarkdown(runImporter, text.replace("\n", "\r\n")) == [
+        ("Chapter 1", "md", "Text 1."),
+        ("Chapter 2", "folder", ""),
+        ("Chapter 2", "md", "```\n# not a header\n```"),
+        ("Scene 1", "md", "End."),
+    ]
