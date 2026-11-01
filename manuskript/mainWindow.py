@@ -991,13 +991,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.saveTimerNoChanges = QTimer()
         self.saveTimerNoChanges.setInterval(settings.autoSaveNoChangesDelay * 1000)
         self.saveTimerNoChanges.setSingleShot(True)
-        self.mdlFlatData.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlOutline.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlCharacter.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlPlots.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlWorld.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlStatus.dataChanged.connect(self.startTimerNoChanges)
-        self.mdlLabels.dataChanged.connect(self.startTimerNoChanges)
+        for signal in self.projectChangeSignals():
+            signal.connect(self.startTimerNoChanges)
 
         self.saveTimerNoChanges.timeout.connect(self.saveDatas)
         self.saveTimerNoChanges.stop()
@@ -1238,6 +1233,19 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             for w in qApp.topLevelWidgets():
                 if w is not self and w.isVisible():
                     w.close()
+
+    def projectChangeSignals(self):
+        """
+        The signals of the project's models that mean that the project has been
+        modified: changed data, but also added, removed or moved rows (a removed
+        character, a new plot, label or world item...), which emit no dataChanged.
+        """
+        signals = []
+        for model in [self.mdlFlatData, self.mdlOutline, self.mdlCharacter, self.mdlPlots,
+                      self.mdlWorld, self.mdlStatus, self.mdlLabels]:
+            signals += [model.dataChanged, model.rowsInserted, model.rowsRemoved,
+                        model.rowsMoved, model.modelReset, model.layoutChanged]
+        return signals
 
     def startTimerNoChanges(self):
         """
@@ -1566,6 +1574,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 break
 
     def breakConnections(self):
+        # The models of the closed project are not deleted: a change to them must
+        # not mark the next project as modified (connected in loadProject()).
+        for signal in self.projectChangeSignals():
+            self.disconnectAll(signal, self.startTimerNoChanges)
+
         # Break connections for UI elements that were connected in makeConnections()
 
         # Characters
