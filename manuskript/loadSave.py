@@ -24,7 +24,10 @@ def saveProject(version=None):
 
 
 def clearSaveCache():
+    """The project is not saved where it was loaded from (new project, "Save as...")."""
     v1.cache = {}
+    v1.freshTarget = True
+    v1.unreadable = {}
 
 
 def loadProject(project):
@@ -38,7 +41,7 @@ def loadProject(project):
     try:
         zf = zipfile.ZipFile(project)
         isZip = True
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, OSError):
         isZip = False
 
     # Does it have a VERSION in zip root?
@@ -69,13 +72,18 @@ def loadProject(project):
 
     # Not a zip
     else:
-        with open(project, 'rt', encoding="utf-8") as f:
-            s = f.read()
+        # A damaged file (e.g. a truncated zip) must not crash the app
+        try:
+            with open(project, 'rt', encoding="utf-8") as f:
+                s = f.read().strip()
+        except (UnicodeDecodeError, OSError) as e:
+            LOGGER.error("Cannot read project file %s: %s", project, e)
+            s = ""
 
-            if s.isdigit():
-                version = int(s)
-            else:
-                errors.append(project)
+        if s.isdigit():
+            version = int(s)
+        else:
+            errors.append(project)
 
     LOGGER.info("Loading: %s", project)
     LOGGER.info("Detected file format version: {}. Zip: {}.".format(version, isZip))

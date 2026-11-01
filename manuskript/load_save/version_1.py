@@ -6,6 +6,8 @@
 # (except for some elements), allowing collaborative work
 # versioning and third-party editing.
 
+import errno
+import io
 import os
 import re
 import shutil
@@ -40,6 +42,22 @@ except:
     compression = zipfile.ZIP_STORED
 
 cache = {}
+
+# True when the cache does not describe the project folder on disk (new project, "Save as...",
+# project loaded from a single file): the next save in folder mode writes the whole project,
+# after removing what an older project in that folder might have left. A project loaded from
+# its folder is never a fresh target, even if nothing could be loaded from it.
+freshTarget = True
+
+# Files and folders of the project folder that could not be read when the project was loaded
+# (path relative to the project folder: reason). Their content is not in the project, so
+# saveProject() never overwrites or removes them.
+unreadable = {}
+
+# Files that saveProject() writes at the root of a project folder (besides the
+# "outline" and "characters" folders).
+projectFiles = ["MANUSKRIPT", "infos.txt", "summary.txt", "labels.txt", "status.txt",
+                "settings.txt", "plots.xml", "world.opml", "revisions.xml"]
 
 
 characterMap = OrderedDict([
@@ -78,6 +96,13 @@ def formatMetaData(name, value, tabLength=10):
     )
 
 
+# File names are made from titles. They are truncated to stay below the file system
+# limit of 255 bytes per file name, and to keep paths short (Windows limits paths to
+# 260 characters, see #313). They stay unique because they start with the item's row
+# (or the character's ID).
+maxSlugLength = 64
+
+
 def slugify(name):
     """
     A basic slug function, that escapes all spaces to "_" and all non letters/digits to "-".
@@ -94,6 +119,57 @@ def slugify(name):
         else:
             newName += "-"
     return newName
+
+
+def writeFile(filename, content, sync=False):
+    """
+    Writes content (str or bytes) to filename, through a temporary file that replaces it only
+    once it has been written completely: if writing fails (disk full, quota...), the previous
+    version of the file is left untouched, and no truncated file is left behind.
+    A symbolic link is written through (its target is replaced), and the mode of an existing
+    file is kept. A file that is not writable is not replaced.
+    @param sync: if True, the new content is flushed to the disk before it replaces the file.
+    @raise OSError: if the file cannot be written.
+    """
+    filename = os.path.realpath(filename)
+    if os.path.exists(filename) and not os.access(filename, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), filename)
+
+    # Hidden, so that a temporary file left by a crash is not loaded as part of the project
+    tmp = os.path.join(os.path.dirname(filename), "." + os.path.basename(filename) + ".tmp")
+    try:
+        if type(content) == bytes:
+            f = open(tmp, "wb")
+        else:
+            f = open(tmp, "wt", encoding="utf8", newline="\n")
+        with f:
+            f.write(content)
+            if sync:
+                f.flush()
+                os.fsync(f.fileno())
+        if os.path.exists(filename):
+            # Best effort: some file systems do not support chmod (network or FUSE mounts...)
+            try:
+                shutil.copymode(filename, tmp)
+            except OSError as e:
+                LOGGER.debug("Cannot keep the mode of %s: %s", filename, e)
+        os.replace(tmp, filename)
+
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def isUnreadable(path):
+    """
+    Returns True if path (relative to the project folder) is, is in, or contains a file or
+    folder that could not be read when the project was loaded.
+    """
+    return any(path == u or path.startswith(u + os.sep) or u.startswith(path + os.sep)
+               for u in unreadable)
 
 
 def saveProject(zip=None):
@@ -238,7 +314,7 @@ def saveProject(zip=None):
         # generate file's path
         cpath = path.format(name="{ID}-{slugName}".format(
             ID=c.ID(),
-            slugName=slugify(c.name())
+            slugName=slugify(c.name())[:maxSlugLength]
         ))
 
         # Has the character been renamed?
@@ -318,19 +394,27 @@ def saveProject(zip=None):
         #     "_" + os.path.basename(project)
         # )
 
-        zf = zipfile.ZipFile(project, mode="w")
+        # The project file is replaced only once the new version is complete (and on disk):
+        # an interrupted save (disk full, removed drive...) must not destroy the previous
+        # version of the project, which is the only copy.
+        try:
+            data = io.BytesIO()
+            with zipfile.ZipFile(data, mode="w") as zf:
+                for filename, content in files:
+                    zf.writestr(filename, content, compress_type=compression)
 
-        for filename, content in files:
-            zf.writestr(filename, content, compress_type=compression)
+            writeFile(project, data.getvalue(), sync=True)
 
-        zf.close()
+        except OSError as e:
+            LOGGER.error("Cannot save project %s: %s", project, e)
+            return False
+
         return True
 
     ####################################################################################################################
     # Save to plain text
 
     else:
-        global cache
         filesWithPermissionErrors = list()
 
         # Project path
@@ -342,71 +426,182 @@ def saveProject(zip=None):
         # Debug
         LOGGER.debug("Saving to folder %s", folder)
 
-        # If cache is empty (meaning we haven't loaded from disk), we wipe folder, just to be sure.
-        if not cache:
-            if os.path.exists(os.path.join(dir, folder)):
-                shutil.rmtree(os.path.join(dir, folder))
-
-        # Moving files that have been renamed
-        for old, new in moves:
-
-            # Get full path
-            oldPath = os.path.join(dir, folder, old)
-            newPath = os.path.join(dir, folder, new)
-
-            # Move the old file to the new place
+        # If the project has not been loaded from this folder (new project, "Save as..."),
+        # we remove what an older project in that folder might have left, just to be sure.
+        # Only if the folder is a Manuskript project, and only the files Manuskript writes:
+        # never wipe a folder of the user that happens to have the project's name.
+        global freshTarget
+        if freshTarget:
+            target = os.path.join(dir, folder)
             try:
-                os.replace(oldPath, newPath)
-                LOGGER.debug("* Renaming/moving {} to {}".format(old, new))
-            except FileNotFoundError:
-                # Maybe parent folder has been renamed
-                pass
+                # Hidden files (.DS_Store...) do not count
+                notEmpty = os.path.isdir(target) and \
+                    [f for f in os.listdir(target) if f[:1] != "."]
+            except OSError:
+                notEmpty = True
+            if notEmpty:
+                if not os.path.isfile(os.path.join(target, "MANUSKRIPT")):
+                    LOGGER.error("Cannot save project: the folder %s already exists and is not "
+                                 "a Manuskript project.", target)
+                    dlg = ListDialog(mw)
+                    dlg.setModal(True)
+                    dlg.setWindowTitle(dlg.tr("Project not saved"))
+                    dlg.label.setText(dlg.tr(
+                        "The project is saved in a folder named like the project file. This folder "
+                        "already exists and is not a Manuskript project, so the project cannot be "
+                        "saved there. Use \"Save as...\" to save it under another name."))
+                    QListWidgetItem(target, dlg.listWidget)
+                    dlg.open()
+                    return False
 
-            # Update cache
-            cache2 = {}
-            for f in cache:
-                f2 = f.replace(old, new)
-                if f2 != f:
-                    LOGGER.debug("  * Updating cache: %s, %s", f, f2)
-                cache2[f2] = cache[f]
-            cache = cache2
+                for sub in ["outline", "characters"]:
+                    if os.path.isdir(os.path.join(target, sub)):
+                        shutil.rmtree(os.path.join(target, sub))
+                for f in projectFiles:
+                    if os.path.isfile(os.path.join(target, f)):
+                        os.remove(os.path.join(target, f))
+
+            # From now on, the cache describes what is in the folder.
+            freshTarget = False
+
+        # Renamed / moved items are NOT moved on disk. Their new path is not in the cache,
+        # so they are written below, and their old file is then removed as a phantom.
+        # Moving files in place one by one is not safe: an item's new path can be the old
+        # path of another item that has not been moved yet (its file gets overwritten,
+        # see #1320), the destination folder may not exist yet (#1306), and renaming the
+        # cache keys by substring corrupted the cache (#1216, #761).
+        for old, new in moves:
+            LOGGER.debug("* %s has been renamed/moved to %s, it will be rewritten", old, new)
 
         # Writing files
         for path, content in files:
             filename = os.path.join(dir, folder, path)
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+            # A file that could not be read when the project was loaded is not overwritten
+            # (it is not in the cache, but its content is not in the project either).
+            if isUnreadable(path):
+                LOGGER.error("Cannot write file %s: it could not be read when the project was "
+                             "loaded.", filename)
+                filesWithPermissionErrors.append("{} ({})".format(
+                    filename, unreadable.get(path, "could not be read")))
+                continue
 
             # Check if content is in cache, and write if necessary
-            if path not in cache or cache[path] != content:
+            # (also if the file has disappeared from disk since it was cached)
+            if path not in cache or cache[path] != content or not os.path.exists(filename):
                 LOGGER.debug("* Writing file {} ({})".format(path, "not in cache" if path not in cache else "different"))
-                # mode = "w" + ("b" if type(content) == bytes else "")
-                if type(content) == bytes:
-                    try:
-                        with open(filename, "wb") as f:
-                            f.write(content)
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + " for writing: " + e.strerror)
-                        filesWithPermissionErrors.append(filename)
-                else:
-                    try:
-                        with open(filename, "wt", encoding="utf8", newline="\n") as f:
-                            f.write(content)
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + " for writing: " + e.strerror)
-                        filesWithPermissionErrors.append(filename)
+                # Any error (permission, name too long, disk full...) is reported, and must not
+                # stop the other files from being written.
+                try:
+                    os.makedirs(os.path.dirname(filename), exist_ok=True)
+                    writeFile(filename, content)
+                    cache[path] = content
 
-                cache[path] = content
+                except OSError as e:
+                    LOGGER.error("Cannot write file %s: %s", filename, e)
+                    filesWithPermissionErrors.append("{} ({})".format(filename, e.strerror or e))
+                    # The file on disk is not up to date: it must be written next time.
+                    if path in cache:
+                        cache[path] = None
 
-        # Removing phantoms
-        for path in [p for p in cache if p not in [p for p, c in files]]:
+        # Removing phantoms (files of items that have been removed, renamed or moved)
+        written = {p.lower(): p for p, c in files}
+        phantoms = [p for p in cache if p not in [p for p, c in files]]
+
+        # The old files of a renamed or moved item are not removed if its new files could not
+        # all be written: they are then the only copy of its content. They stay on disk and in
+        # the cache, and the item keeps its old path, so that the next save handles it as
+        # moved again (and removes the old files once the new ones have been written).
+        # The old files of removed items, and of the items written at their new place, are
+        # removed even if other files could not be written.
+        failed = [p for p, c in files if cache.get(p) != c]
+        # A folder whose folder.txt could not be written is not loaded, nor anything in it:
+        # the items written into it have not been written either.
+        unloadable = [os.path.dirname(f) for f in failed if os.path.basename(f) == "folder.txt"
+                      and not os.path.exists(os.path.join(dir, folder, f))]
+        notMoved = {new: old for old, new in moves
+                    if any(f == new or f.startswith(new + os.sep) for f in failed)
+                    or any(new.startswith(u + os.sep) for u in unloadable)}
+        if notMoved:
+            LOGGER.warning("Some files could not be written, the old files of %d renamed or "
+                           "moved items are not removed.", len(notMoved))
+            phantoms = [p for p in phantoms if not any(
+                p == old or p.startswith(old + os.sep) for old in notMoved.values())]
+
+            for c in mw.mdlCharacter.characters:
+                c.lastPath = notMoved.get(c.lastPath, c.lastPath)
+
+            def keepOldPath(item):
+                for child in item.children():
+                    child._lastPath = notMoved.get(child._lastPath, child._lastPath)
+                    keepOldPath(child)
+
+            keepOldPath(mw.mdlOutline.rootItem)
+
+        # Files and folders that could not be read when the project was loaded are not part of
+        # the project, so they are not written with the other files of a renamed or moved
+        # folder. They are moved to its new place once it has been written: left in the old
+        # folder, they would no longer be loaded once its folder.txt has been removed.
+        entries = list(unreadable)
+        for old, new in moves:
+            if new in notMoved or not os.path.isdir(os.path.join(dir, folder, new)):
+                continue
+            for u in [u for u in entries if u in unreadable and os.path.dirname(u) == old]:
+                target = os.path.join(new, os.path.basename(u))
+                try:
+                    if target.lower() in written or \
+                            os.path.lexists(os.path.join(dir, folder, target)):
+                        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), target)
+                    os.replace(os.path.join(dir, folder, u), os.path.join(dir, folder, target))
+                except OSError as e:
+                    # The old folder then keeps its folder.txt (see below)
+                    LOGGER.error("Cannot move %s to %s: %s", u, target, e)
+                    continue
+                LOGGER.debug("* Moved %s to %s", u, target)
+                for k in [k for k in unreadable if k == u or k.startswith(u + os.sep)]:
+                    unreadable[target + k[len(u):]] = unreadable.pop(k)
+
+        for path in phantoms:
             filename = os.path.join(dir, folder, path)
-            LOGGER.debug("* Removing %s", path)
 
-            if os.path.isdir(filename):
-                shutil.rmtree(filename)
+            # On a case-insensitive file system (Windows, macOS), the old file of an item
+            # whose name only changed in case is the file that has just been written.
+            same = written.get(path.lower())
+            try:
+                isWrittenFile = same is not None and \
+                    os.path.samefile(filename, os.path.join(dir, folder, same))
+            except OSError:
+                isWrittenFile = False
 
-            else:  # elif os.path.exists(filename)
-                os.remove(filename)
+            try:
+                if isWrittenFile:
+                    LOGGER.debug("* Not removing %s: it is the same file as %s", path, same)
+
+                elif isUnreadable(path):
+                    LOGGER.debug("* Not removing %s: it could not be read when loading", path)
+
+                elif os.path.basename(path) == "folder.txt" and any(
+                        u.startswith(os.path.dirname(path) + os.sep)
+                        for u in list(unreadable) + list(notMoved.values())):
+                    # Without it, the files of its folder that could not be read when loading
+                    # (and could not be moved with it), and the old files kept above, would no
+                    # longer be loaded.
+                    LOGGER.warning("* Not removing %s: its folder holds files that could not be "
+                                   "read when loading, or that could not be moved", path)
+                    continue
+
+                elif os.path.isdir(filename):
+                    LOGGER.debug("* Removing %s", path)
+                    shutil.rmtree(filename)
+
+                elif os.path.exists(filename):
+                    LOGGER.debug("* Removing %s", path)
+                    os.remove(filename)
+
+            except OSError as e:
+                # Keep it in the cache, so that we try again next time.
+                LOGGER.error("Cannot remove file %s: %s", filename, e)
+                continue
 
             # Clear cache
             cache.pop(path, 0)
@@ -424,22 +619,22 @@ def saveProject(zip=None):
 
         # Write the project file's content
         try:
-            with open(project, "wt", encoding="utf8", newline="\n") as f:
-                f.write("1")  # Format number
-        except PermissionError as e:
-            LOGGER.error("Cannot open file " + project + " for writing: " + e.strerror)
-            filesWithPermissionErrors.append(project)
+            writeFile(project, "1")  # Format number
+        except OSError as e:
+            LOGGER.error("Cannot write file %s: %s", project, e)
+            filesWithPermissionErrors.append("{} ({})".format(project, e.strerror or e))
 
         if len(filesWithPermissionErrors) > 0:
             dlg = ListDialog(mw)
             dlg.setModal(True)
             dlg.setWindowTitle(dlg.tr("Files not saved"))
-            dlg.label.setText(dlg.tr("The following files were not saved and appear to be open in another program"))
+            dlg.label.setText(dlg.tr("The following files could not be saved:"))
             for f in filesWithPermissionErrors:
                 QListWidgetItem(f, dlg.listWidget)
             dlg.open()
 
-        if project in filesWithPermissionErrors:
+        # Some files have not been written: the project is not (completely) saved.
+        if filesWithPermissionErrors:
             return False
         return True
 
@@ -468,8 +663,9 @@ def addWorldItem(root, mdl, parent=QModelIndex()):
                 if y == w.value:
                     outline.attrib[w.name] = val
 
-            if mdl.hasChildren(mdl.index(x, y, parent)):
-                addWorldItem(outline, mdl, mdl.index(x, y, parent))
+        # Sub-items, even if this item has an empty name (which is skipped above)
+        if mdl.hasChildren(mdl.index(x, 0, parent)):
+            addWorldItem(outline, mdl, mdl.index(x, 0, parent))
 
     return root
 
@@ -609,7 +805,7 @@ def outlineItemPath(item):
 
         name = "{ID}-{name}{ext}".format(
             ID=str(item.row()).zfill(len(str(siblings))),
-            name=slugify(title),
+            name=slugify(title)[:maxSlugLength],
             ext="" if item.type() == "folder" else ".md"
         )
         return outlineItemPath(item.parent()) + [name]
@@ -649,7 +845,6 @@ def loadProject(project, zip=None):
 
     mw = mainWindow()
     errors = list()
-    filesWithPermissionErrors = list()
 
     ####################################################################################################################
     # Read and store everything in a dict
@@ -674,7 +869,22 @@ def loadProject(project, zip=None):
         path = os.path.join(dir, folder, "")
 
         files = {}
-        for dirpath, dirnames, filenames in os.walk(path):
+        # Files and folders that cannot be read (relative path: reason)
+        notRead = OrderedDict()
+
+        def reason(e):
+            return getattr(e, "strerror", None) or str(e)
+
+        def walkError(e):
+            # A folder that cannot be listed (or the project folder does not exist)
+            p = os.path.relpath(e.filename, path) if e.filename else "."
+            p = "" if p == "." else p
+            # Hidden folders are not loaded anyway
+            if not any(c[:1] == "." for c in p.split(os.sep)):
+                LOGGER.error("Cannot read folder %s: %s", e.filename, e)
+                notRead[p] = reason(e)
+
+        for dirpath, dirnames, filenames in os.walk(path, onerror=walkError):
             p = dirpath.replace(path, "")
             # Skip directories that begin with a period
             if p[:1] == ".":
@@ -687,26 +897,47 @@ def loadProject(project, zip=None):
                 if f[:1] == ".":
                     continue
                 # mode = "r" + ("b" if f[-4:] in [".xml", "opml"] else "")
-                if f[-4:] in [".xml", "opml"]:
-                    with open(os.path.join(dirpath, f), "rb") as fo:
-                        files[os.path.join(p, f)] = fo.read()
-                else:
-                    try:
-                        filename = os.path.join(dirpath, f)
+                # A file that cannot be read (permissions, file locked or removed by a sync
+                # tool, dangling symlink, path too long, invalid encoding...) is reported.
+                filename = os.path.join(dirpath, f)
+                try:
+                    if f[-4:] in [".xml", "opml"]:
+                        with open(filename, "rb") as fo:
+                            files[os.path.join(p, f)] = fo.read()
+                    else:
                         with open(filename, 'rt', encoding="utf8") as fo:
                             files[os.path.join(p, f)] = fo.read()
 
-                    except (UnicodeDecodeError, FileNotFoundError, IsADirectoryError) as e:
-                         LOGGER.error("Ignore file " + filename + " because of the error: " + e.reason)
-                         
-                    except PermissionError as e:
-                        LOGGER.error("Cannot open file " + filename + ": " + e.strerror)
-                        errors.append(fo)
-                        filesWithPermissionErrors.append(filename)
+                except (UnicodeDecodeError, OSError) as e:
+                    LOGGER.error("Cannot read file %s: %s", filename, e)
+                    notRead[os.path.join(p, f)] = reason(e)
+                    # Without its folder.txt, nothing in a folder is loaded
+                    if f == "folder.txt" and p:
+                        notRead[p] = reason(e)
+
+        global cache, freshTarget, unreadable
+        errors += list(notRead)
+
+        # If the project folder, its main folders or any of the files at its root could not be
+        # read, the project is not opened: it would be saved without them (an empty project,
+        # or empty plots, world, settings...). Other files that cannot be read are not loaded,
+        # and are left untouched when the project is saved.
+        failed = [p for p in notRead if p in ["", "outline", "characters"] + projectFiles]
+        if failed or (notRead and not files):
+            LOGGER.error("Project %s cannot be loaded: some files cannot be read.", project)
+            showFilesNotLoaded(mw, path, notRead, failed=True)
+            # Nothing of this project must be used by the next save (of another project)
+            cache, freshTarget, unreadable = {}, True, {}
+            errors.append(project)
+            return errors
+
+        if notRead:
+            showFilesNotLoaded(mw, path, notRead)
 
         # Saves to cache (only if we loaded from disk and not zip)
-        global cache
         cache = files
+        freshTarget = False
+        unreadable = dict(notRead)
 
         # FIXME: watch directory for changes
 
@@ -717,7 +948,8 @@ def loadProject(project, zip=None):
     # Settings
 
     if "settings.txt" in files:
-        settings.load(files["settings.txt"], fromString=True, protocol=0)
+        if not settings.load(files["settings.txt"], fromString=True, protocol=0):
+            errors.append("settings.txt")
     else:
         errors.append("settings.txt")
 
@@ -736,12 +968,18 @@ def loadProject(project, zip=None):
             if not s:
                 continue
 
-            m = re.search(r"^(.*?):\s*(.*)$", s)
-            txt = m.group(1)
-            col = m.group(2)
+            # "name:   color" (as written by saveProject). The name can contain ":",
+            # and labels without color are written without ":".
+            m = re.match(r"^(.*):\s*(\S+)\s*$", s)
+            if m and QColor.isValidColor(m.group(2)):
+                txt, col = m.group(1), m.group(2)
+            else:
+                txt, col = s, None
             LOGGER.debug("* Add status: {} ({})".format(txt, col))
-            icon = iconFromColorString(col)
-            mdl.appendRow(QStandardItem(icon, txt))
+            if col:
+                mdl.appendRow(QStandardItem(iconFromColorString(col), txt))
+            else:
+                mdl.appendRow(QStandardItem(txt))
 
     else:
         errors.append("labels.txt")
@@ -851,7 +1089,8 @@ def loadProject(project, zip=None):
 
     mdl = mw.mdlCharacter
     LOGGER.debug("Reading Characters:")
-    for f in [f for f in files if "characters" in f]:
+    # Only files in the top-level "characters" folder (not e.g. a scene titled "Main characters")
+    for f in [f for f in files if f.split(os.path.sep)[0] == "characters"]:
         md, body = parseMMDFile(files[f])
         c = mdl.addCharacter()
         c.lastPath = f
@@ -885,7 +1124,8 @@ def loadProject(project, zip=None):
 
     mdl = mw.mdlOutline
     LOGGER.debug("Reading outline:")
-    paths = [f for f in files if "outline" in f]
+    # Only files in the top-level "outline" folder (not e.g. a character named "outline")
+    paths = [f for f in files if f.split(os.path.sep)[0] == "outline"]
     outline = OrderedDict()
 
     # We create a structure of imbricated OrderedDict to store the whole tree.
@@ -927,16 +1167,48 @@ def loadProject(project, zip=None):
     # Check IDS
     mdl.rootItem.checkIDs()
 
-    if len(filesWithPermissionErrors) > 0:
-        dlg = ListDialog(mw)
-        dlg.setModal(True)
-        dlg.setWindowTitle(dlg.tr("Files not loaded"))
-        dlg.label.setText(dlg.tr("The following files were not loaded and appear to be open in another program"))
-        for f in filesWithPermissionErrors:
-            QListWidgetItem(f, dlg.listWidget)
-        dlg.open()
+    if not zip:
+        # saveProject() removes every cached file that it has not written, as the file of a
+        # removed item. Files that have not been loaded into the project (unknown files,
+        # scenes without ID, folders without folder.txt, ...) must therefore not be in the
+        # cache, otherwise they are deleted on the next save. They are left untouched.
+        used = set(projectFiles)
+        used.update(c.lastPath for c in mw.mdlCharacter.characters)
+
+        def addUsed(item):
+            for c in item.children():
+                used.add(c._lastPath)
+                used.add(os.path.join(c._lastPath, "folder.txt"))
+                addUsed(c)
+
+        addUsed(mdl.rootItem)
+        for f in [f for f in cache if f not in used]:
+            LOGGER.warning("File %s has not been loaded, it will be left untouched.", f)
+            cache.pop(f)
 
     return errors
+
+
+def showFilesNotLoaded(mw, path, notRead, failed=False):
+    """
+    Tells the user which files of the project folder could not be read.
+    @param path: the project folder
+    @param notRead: {relative path: reason}
+    @param failed: True if the project cannot be opened because of them
+    """
+    dlg = ListDialog(mw)
+    dlg.setModal(True)
+    dlg.setWindowTitle(dlg.tr("Files not loaded"))
+    if failed:
+        dlg.label.setText(dlg.tr("The following files could not be read, so the project "
+                                 "cannot be opened:"))
+    else:
+        dlg.label.setText(dlg.tr("The following files could not be read. They are not loaded, "
+                                 "and they are left untouched when the project is saved:"))
+    for f, reason in notRead.items():
+        QListWidgetItem("{} ({})".format(os.path.normpath(os.path.join(path, f)), reason),
+                        dlg.listWidget)
+    dlg.open()
 
 
 def addTextItems(mdl, odict, parent=None):
@@ -1104,8 +1376,8 @@ def parseMMDFile(text, asDict=False):
                 descr = ""
                 val = ""
 
-                # Store new values
-                descr = m.group(1)
+                # Store new values (formatMetaData() escapes ":" in names)
+                descr = m.group(1).replace("_.._", ":")
                 val = m.group(2)
 
             elif s[:4] == "    ":

@@ -4,6 +4,7 @@
 import locale
 import importlib
 import os
+import shutil
 
 from PyQt5.QtCore import QSettings, QRegExp, Qt, QDir
 from PyQt5.QtGui import QIcon, QBrush, QColor, QStandardItemModel, QStandardItem
@@ -13,7 +14,7 @@ from PyQt5.QtWidgets import QWidget, QAction, QFileDialog, QSpinBox, QLineEdit, 
 from manuskript import loadSave
 from manuskript import settings
 from manuskript.enums import Outline
-from manuskript.functions import mainWindow, iconFromColor, appPath
+from manuskript.functions import mainWindow, iconFromColor, appPath, writablePath, statusMessage
 from manuskript.models.characterModel import characterModel
 from manuskript.models import outlineItem, outlineModel
 from manuskript.models.plotModel import plotModel
@@ -178,6 +179,8 @@ class welcome(QWidget, Ui_welcome):
             self.setLastAccessedDirectory(os.path.dirname(filename))
             if filename[-4:] != ".msk":
                 filename += ".msk"
+            if not settings.saveToZip and not self.checkProjectFolder(filename):
+                return
             self.appendToRecentFiles(filename)
             loadSave.clearSaveCache()  # Ensure all file(s) are saved under new filename
             self.mw.saveDatas(filename)
@@ -203,6 +206,8 @@ class welcome(QWidget, Ui_welcome):
             self.setLastAccessedDirectory(os.path.dirname(filename))
             if filename[-4:] != ".msk":
                 filename += ".msk"
+            if not self.checkProjectFolder(filename):
+                return
             if os.path.exists(filename) and not overwrite:
                 # Check if okay to overwrite existing project
                 result = QMessageBox.warning(self, self.tr("Warning"),
@@ -214,6 +219,27 @@ class welcome(QWidget, Ui_welcome):
             self.appendToRecentFiles(filename)
             self.loadDefaultDatas()
             self.mw.loadProject(filename, loadFromFile=False)
+
+    def checkProjectFolder(self, filename):
+        """
+        A project saved in folders is stored in a folder named like the project file,
+        next to it. Returns False, after warning the user, if such a folder already exists
+        and is not a Manuskript project: the project cannot be saved there.
+        """
+        folder = os.path.splitext(filename)[0]
+        try:
+            # Hidden files (.DS_Store...) do not count
+            notEmpty = os.path.isdir(folder) and [f for f in os.listdir(folder) if f[:1] != "."]
+        except OSError as e:
+            LOGGER.error("Cannot read folder %s: %s", folder, e)
+            notEmpty = True
+        if notEmpty and not os.path.isfile(os.path.join(folder, "MANUSKRIPT")):
+            QMessageBox.warning(self, self.tr("Warning"),
+                self.tr("The folder {} already exists and is not a Manuskript project. "
+                        "Manuskript stores the project in a folder with this name, "
+                        "please choose another name.").format(folder))
+            return False
+        return True
 
     ###############################################################################
     # TEMPLATES
@@ -267,8 +293,37 @@ class welcome(QWidget, Ui_welcome):
             self.updateTemplate()
             # Change button text
             self.btnCreate.setText("Open {}".format(name))
-            # Load project
-            self.mw.loadProject(appPath(os.path.join("sample-projects", name)))
+            # Load project: a copy of it, the one that is installed must not be modified
+            # (and it may not be writable, so that changes could not be saved).
+            project = self.copyDemoProject(name)
+            if project:
+                self.appendToRecentFiles(project)
+                self.mw.loadProject(project)
+
+    def copyDemoProject(self, name):
+        """
+        Returns the path to the user's own copy of the demo project `name` (a .msk file
+        in the sample-projects folder), after copying it there if it does not exist yet.
+        Returns None if it cannot be copied.
+        """
+        src = appPath(os.path.join("sample-projects", name))
+        try:
+            dst = os.path.join(writablePath("sample-projects"), name)
+            if not os.path.exists(dst):
+                # Folder first: the project file is only there if the copy is complete.
+                # Only the content is copied, not the permissions: the installed files
+                # may be read-only.
+                for dirpath, dirnames, filenames in os.walk(src[:-4]):
+                    target = os.path.join(dst[:-4], os.path.relpath(dirpath, src[:-4]))
+                    os.makedirs(target, exist_ok=True)
+                    for f in filenames:
+                        shutil.copyfile(os.path.join(dirpath, f), os.path.join(target, f))
+                shutil.copyfile(src, dst)
+        except OSError as e:
+            LOGGER.error("Cannot copy demo project %s: %s", src, e)
+            statusMessage(self.tr("Cannot copy demo project {}.").format(name), importance=3)
+            return None
+        return dst
 
     def updateTemplate(self):
         # Clear layout
