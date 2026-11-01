@@ -1,18 +1,24 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
+import os
 import random
 import shutil
+import tempfile
 
-from PyQt5.QtCore import QUrl
-from PyQt5.QtWidgets import qApp
+from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtWidgets import qApp, QLabel
 
 from manuskript.exporter.pandoc.abstractOutput import abstractOutput
 from manuskript.functions import tempFile, safeTranslate
-from manuskript.ui.views.PDFViewer import PDFViewer
+
+import logging
+LOGGER = logging.getLogger(__name__)
 
 
 class PDF(abstractOutput):
-    """PDF Viewer using PDF.js. Cf. https://github.com/mozilla/pdf.js/wiki/Setup-PDF.js-in-a-website"""
+    """PDF through pandoc and LaTeX. The preview opens the generated PDF in
+    the system's default PDF viewer."""
 
     name = "PDF"
     description = safeTranslate(qApp, "Export", "Needs LaTeX to be installed.")
@@ -41,12 +47,62 @@ class PDF(abstractOutput):
         return self.exporter.convert(src, args, outputfile)
 
     def previewWidget(self):
-        return PDFViewer()
+        w = QLabel(safeTranslate(qApp, "Export",
+                   "The preview opens the PDF in your default PDF viewer."))
+        w.setAlignment(Qt.AlignCenter)
+        w.setWordWrap(True)
+        w.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        return w
+
+    @staticmethod
+    def previewFilename():
+        """Returns the file to write the preview to. The PDFs from earlier
+        previews are removed first, so that a failed export does not open
+        one of them again."""
+        filename = tempFile("msk_pdfpreview.pdf")
+        folder = os.path.dirname(filename)
+
+        # The msk_pdfpreview-*.pdf files made below by earlier previews.
+        # Those a PDF viewer still has open cannot be removed on Windows,
+        # they are removed by a later preview.
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            names = []
+        for name in names:
+            if name.startswith("msk_pdfpreview-") and name.endswith(".pdf"):
+                try:
+                    os.remove(os.path.join(folder, name))
+                except OSError:
+                    pass
+
+        try:
+            if os.path.exists(filename):
+                os.remove(filename)
+        except OSError as e:
+            # On Windows, the PDF viewer can still have the last preview open.
+            LOGGER.info("Cannot replace the last PDF preview (%s), using a new file.", e)
+            fd, filename = tempfile.mkstemp(prefix="msk_pdfpreview-", suffix=".pdf",
+                                            dir=folder)
+            os.close(fd)
+            os.remove(filename)
+        return filename
 
     def preview(self, settingsWidget, previewWidget):
-        filename = tempFile("msk_pdfpreview.pdf")
+        filename = self.previewFilename()
 
         settingsWidget.writeSettings()
         content = self.output(settingsWidget, outputfile=filename)
 
-        previewWidget.loadPDF(filename)
+        # When pandoc fails, it has already shown the error.
+        if content is None or not os.path.isfile(filename):
+            previewWidget.setText(safeTranslate(qApp, "Export",
+                "No PDF has been produced, so none has been opened."))
+            return
+
+        if QDesktopServices.openUrl(QUrl.fromLocalFile(filename)):
+            previewWidget.setText(safeTranslate(qApp, "Export",
+                "The PDF has been opened in your default PDF viewer:\n{}").format(filename))
+        else:
+            previewWidget.setText(safeTranslate(qApp, "Export",
+                "The PDF could not be opened. It has been saved here:\n{}").format(filename))

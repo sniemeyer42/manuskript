@@ -193,7 +193,6 @@ SOURCES += ../manuskript/ui/views/treeDelegates.py
 SOURCES += ../manuskript/ui/views/chkOutlineCompile.py
 SOURCES += ../manuskript/ui/views/dndView.py
 SOURCES += ../manuskript/ui/views/corkDelegate.py
-SOURCES += ../manuskript/ui/views/PDFViewer.py
 SOURCES += ../manuskript/ui/views/propertiesView_ui.py
 SOURCES += ../manuskript/ui/collapsibleDockWidgets.py
 SOURCES += ../manuskript/ui/collapsibleGroupBox2.py

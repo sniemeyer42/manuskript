@@ -27,7 +27,7 @@ Requires: python3, python3-qt5, python3-lxml, zlib, python3-markdown, pandoc
 Requires: libQt5Svg5, python3-pyenchant
 %else
 # Assume Fedora and others
-Requires: python3-qt5-webkit, qt5-qtsvg, python3-enchant
+Requires: qt5-qtsvg, python3-enchant
 %endif
 
 %description

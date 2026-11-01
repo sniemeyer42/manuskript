@@ -25,7 +25,6 @@ a = Analysis(
     binaries=None,
     datas=[
         ("icons", "icons"),
-        ("libs", "libs"),
         ("resources", "resources"),
         ("sample-projects", "sample-projects"),
         ("i18n", "i18n"),

@@ -3,28 +3,21 @@
 import PyQt5
 import os
 
-features = {'qtwebkit': False, 'qtwebengine': False}
+# The HTML export previews render with QtWebEngine if it is installed, and
+# with a QTextEdit (basic HTML only) otherwise. QT_WEB=qtwebengine forces
+# QtWebEngine, any other value of QT_WEB the QTextEdit.
+features = {'qtwebengine': False}
 
 if 'QT_WEB' in os.environ:
     features[os.environ['QT_WEB']] = True
 else:
-    try:
-        import PyQt5.QtWebKitWidgets
-        features['qtwebkit'] = True
-    except:
-        features['qtwebkit'] = False
-
     try:
         import PyQt5.QtWebEngineWidgets
         features['qtwebengine'] = True
     except:
         features['qtwebengine'] = False
 
-if features['qtwebkit']:
-    from PyQt5.QtWebKitWidgets import QWebView
-    webEngine = "QtWebKit"
-    webView = QWebView
-elif features['qtwebengine']:
+if features['qtwebengine']:
     from PyQt5 import QtWebEngineWidgets
     webEngine = "QtWebEngine"
     webView = QtWebEngineWidgets.QWebEngineView
