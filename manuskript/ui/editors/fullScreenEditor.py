@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QFrame, QWidget, QPushButton, qApp, QStyle, QComboBo
 from manuskript import settings
 from manuskript.enums import Outline
 from manuskript.models import outlineItem
-from manuskript.functions import allPaths, drawProgress, safeTranslate
+from manuskript.functions import allPaths, drawProgress, safeTranslate, uiParse
 from manuskript.ui.editors.locker import locker
 from manuskript.ui.editors.themes import findThemePath, generateTheme, setThemeEditorDatas
 from manuskript.ui.editors.themes import loadThemeDatas
@@ -351,12 +351,15 @@ class fullScreenEditor(QWidget):
         self.wPath.setItem(item)
 
     def updateStatusBar(self):
-        if self._index:
-            item = self._index.internalPointer()
+        if not self._index:
+            return
+        item = self._index.internalPointer()
 
-        wc = item.data(Outline.wordCount)
-        goal = item.data(Outline.goal)
-        pg = item.data(Outline.goalPercentage)
+        # The model can give strings here (e.g. "" for an empty text, or the
+        # goal as typed in the properties), so normalize like mainEditor does.
+        wc = uiParse(item.data(Outline.wordCount), 0, int, lambda x: x >= 0)
+        goal = uiParse(item.data(Outline.goal), None, int, lambda x: x >= 0)
+        pg = uiParse(item.data(Outline.goalPercentage), 0.0, float)
 
         if goal:
             if settings.fullscreenSettings.get("progress-auto-show", True):

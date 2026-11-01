@@ -602,17 +602,21 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             pass
 
     def deleteCharacter(self):
-        ID = self.lstCharacters.removeCharacters()
-        if ID is None:
+        IDs = self.lstCharacters.removeCharacters()
+        if not IDs:
             return
-        for itemID in self.mdlOutline.findItemsByPOV(ID):
-            item = self.mdlOutline.getItemByID(itemID)
-            if item:
-                item.resetPOV()
+        for ID in IDs:
+            for itemID in self.mdlOutline.findItemsByPOV(ID):
+                item = self.mdlOutline.getItemByID(itemID)
+                if item:
+                    item.resetPOV()
 
     ###############################################################################
     # PLOTS
     ###############################################################################
+
+    def removeCurrentPlot(self):
+        self.mdlPlots.removePlot(self.lstPlots.currentPlotIndex())
 
     def changeCurrentPlot(self):
         index = self.lstPlots.currentPlotIndex()
@@ -1092,9 +1096,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # Close open tabs in editor
         self.mainEditor.closeAllTabs()
 
+        # Search results refer to the items of the closed project
+        self.widget.clearResults()
+
         self.currentProject = None
         self.projectDirty = None
         QSettings().setValue("lastProject", "")
+
+        # Break the connections to the models of the closed project. This must
+        # happen before loadEmptyDatas() replaces them with new ones.
+        self.breakConnections()
 
         # Clear datas
         self.loadEmptyDatas()
@@ -1102,13 +1113,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.saveTimerNoChanges.stop()
         loadSave.clearSaveCache()
 
-        self.breakConnections()
+        # The history refers to the items of the closed project. This also
+        # disables Back and Forward.
+        self.history.reset()
 
         # UI
         for i in [self.actOpen, self.menuRecents]:
             i.setEnabled(True)
         for i in [self.actSave, self.actSaveAs, self.actCloseProject,
                   self.menuEdit, self.menuView, self.menuOrganize,
+                  self.menuNavigate,
                   self.menuTools, self.menuHelp, self.actImport,
                   self.actCompile, self.actSettings]:
             i.setEnabled(False)
@@ -1211,6 +1225,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
             # Storing the visibility of docks to restore it on restart
             appSettings.setValue("docks", self._dckVisibility)
+
+            # Close the other windows (e.g. About, Import, Compile): they
+            # have no parent, so they would keep the application running.
+            for w in qApp.topLevelWidgets():
+                if w is not self and w.isVisible():
+                    w.close()
 
     def startTimerNoChanges(self):
         """
@@ -1361,20 +1381,22 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # Characters
         self.updatePersoInfoView(self.tblPersoInfos)
-        self.lstCharacters.setCharactersModel(self.mdlCharacter)
         self.tblPersoInfos.setModel(self.mdlCharacter)
-        try:
-            self.btnAddPerso.clicked.connect(self.lstCharacters.addCharacter, F.AUC)
-            self.btnRmPerso.clicked.connect(self.deleteCharacter, F.AUC)
-
-            self.btnPersoColor.clicked.connect(self.lstCharacters.choseCharacterColor, F.AUC)
-            self.chkPersoPOV.stateChanged.connect(self.lstCharacters.changeCharacterPOVState, F.AUC)
-
-            self.btnPersoAddInfo.clicked.connect(self.lstCharacters.addCharacterInfo, F.AUC)
-            self.btnPersoRmInfo.clicked.connect(self.lstCharacters.removeCharacterInfo, F.AUC)
-        except TypeError:
-            # Connection has already been made
-            pass
+        for signal, slot in [
+            (self.btnAddPerso.clicked, self.lstCharacters.addCharacter),
+            (self.btnRmPerso.clicked, self.deleteCharacter),
+            (self.btnPersoColor.clicked, self.lstCharacters.choseCharacterColor),
+            (self.chkPersoPOV.stateChanged, self.lstCharacters.changeCharacterPOVState),
+            (self.btnPersoAddInfo.clicked, self.lstCharacters.addCharacterInfo),
+            (self.btnPersoRmInfo.clicked, self.lstCharacters.removeCharacterInfo),
+        ]:
+            # Each one separately, so that one existing connection doesn't
+            # prevent the following ones from being made.
+            try:
+                signal.connect(slot, F.AUC)
+            except TypeError:
+                # Connection has already been made
+                pass
 
         for w, c in [
             (self.txtPersoName, Character.name),
@@ -1392,14 +1414,16 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             w.setColumn(c)
         self.tabPersos.setEnabled(False)
 
+        # Last: this selects the previously selected character again, which
+        # sets up (and enables) the character widgets above.
+        self.lstCharacters.setCharactersModel(self.mdlCharacter)
+
         # Plots
         self.lstSubPlots.setModel(self.mdlPlots)
         self.lstPlotPerso.setModel(self.mdlPlots)
-        self.lstPlots.setPlotModel(self.mdlPlots)
         self._updatingSubPlot = False
         self.btnAddPlot.clicked.connect(self.mdlPlots.addPlot, F.AUC)
-        self.btnRmPlot.clicked.connect(lambda:
-                                       self.mdlPlots.removePlot(self.lstPlots.currentPlotIndex()), F.AUC)
+        self.btnRmPlot.clicked.connect(self.removeCurrentPlot, F.AUC)
         self.btnAddSubPlot.clicked.connect(self.mdlPlots.addSubPlot, F.AUC)
         self.btnAddSubPlot.clicked.connect(self.updateSubPlotView, F.AUC)
         self.btnRmSubPlot.clicked.connect(self.mdlPlots.removeSubPlot, F.AUC)
@@ -1417,6 +1441,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             w.setColumn(c)
 
         self.tabPlot.setEnabled(False)
+        # After the line above: this selects the previously selected plot
+        # again, which enables the plot widgets.
+        self.lstPlots.setPlotModel(self.mdlPlots)
         self.mdlPlots.updatePlotPersoButton()
         self.mdlCharacter.dataChanged.connect(self.mdlPlots.updatePlotPersoButton)
         self.lstOutlinePlots.setPlotModel(self.mdlPlots)
@@ -1535,8 +1562,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # Plots
         self._updatingSubPlot = False
         self.disconnectAll(self.btnAddPlot.clicked, self.mdlPlots.addPlot)
-        self.disconnectAll(self.btnRmPlot.clicked, lambda:
-                                                   self.mdlPlots.removePlot(self.lstPlots.currentPlotIndex()))
+        self.disconnectAll(self.btnRmPlot.clicked, self.removeCurrentPlot)
         self.disconnectAll(self.btnAddSubPlot.clicked, self.mdlPlots.addSubPlot)
         self.disconnectAll(self.btnAddSubPlot.clicked, self.updateSubPlotView)
         self.disconnectAll(self.btnRmSubPlot.clicked, self.mdlPlots.removeSubPlot)
@@ -1574,8 +1600,6 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                 lambda: self.tblDebugSubPlots.setRootIndex(self.mdlPlots.index(
                         self.tblDebugPlots.selectionModel().currentIndex().row(),
                         Plot.steps)))
-        
-        self.disconnectAll(self.history.navigated)
 
     ###############################################################################
     # HELP

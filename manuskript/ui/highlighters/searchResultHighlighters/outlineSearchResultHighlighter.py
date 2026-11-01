@@ -17,7 +17,7 @@ class outlineSearchResultHighlighter(abstractSearchResultHighlighter):
 
     def openView(self, searchResult):
         r = Ref.textReference(searchResult.id())
-        Ref.open(r)
+        return Ref.open(r)
 
     def retrieveWidget(self, searchResult):
         editors = {
@@ -41,6 +41,9 @@ class outlineSearchResultHighlighter(abstractSearchResultHighlighter):
             mainWindow().toolbar.switchActionByWidget(metadataViewWidget)
             widget = metadataViewWidget.findChild(editorClass, editorName)
         else:
-            widget = mainWindow().mainEditor.currentEditor().findChild(editorClass, editorName)
+            editor = mainWindow().mainEditor.currentEditor()
+            if editor is None:
+                return None
+            widget = editor.findChild(editorClass, editorName)
 
         return widget

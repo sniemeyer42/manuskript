@@ -19,7 +19,7 @@ from manuskript.enums import Outline
 from manuskript.enums import Character
 from manuskript.enums import Plot
 from manuskript.enums import PlotStep
-from manuskript.functions import mainWindow, mixColors, safeTranslate
+from manuskript.functions import mainWindow, mixColors, safeTranslate, toInt
 from manuskript.ui import style as S
 
 
@@ -114,24 +114,23 @@ def infos(ref):
 
         # The POV of the scene
         POV = ""
+        character = None
         if item.POV():
+            character = mainWindow().mdlCharacter.getCharacterByID(item.POV())
+        if character:
             POV = "<a href='{ref}'>{text}</a>".format(
                     ref=characterReference(item.POV()),
-                    text=mainWindow().mdlCharacter.getCharacterByID(item.POV()).name())
+                    text=character.name())
 
         # The status of the scene
         status = item.status()
-        if status:
-            status = mainWindow().mdlStatus.item(int(status), 0).text()
-        else:
-            status = ""
+        statusItem = mainWindow().mdlStatus.item(toInt(status), 0) if status else None
+        status = statusItem.text() if statusItem else ""
 
         # The label of the scene
         label = item.label()
-        if label:
-            label = mainWindow().mdlLabels.item(int(label), 0).text()
-        else:
-            label = ""
+        labelItem = mainWindow().mdlLabels.item(toInt(label), 0) if label else None
+        label = labelItem.text() if labelItem else ""
 
         # The path of the scene
         path = item.pathID()

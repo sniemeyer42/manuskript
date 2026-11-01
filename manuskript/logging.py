@@ -175,7 +175,7 @@ def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
 # The situation with threads and uncaught exceptions is fraught in peril.
 # Hopefully this solves our problems on more recent versions of Python.
 def handle_uncaught_thread_exception(args):
-    if issubclass(exc_type, SystemExit):
+    if issubclass(args.exc_type, SystemExit):
         return # match behaviour of default hook, see manual
 
     # Anything that reaches this handler can be considered a minor deal-breaker.
@@ -217,13 +217,16 @@ from PyQt5.Qt import QtMsgType
 
 def qtMessageHandler(msg_type, msg_log_context, msg_string):
     """Forwards Qt messages to Python logging system."""
-    # Convert Qt msg type to logging level
-    msg_type_index = int(msg_type)
-    log_levels = [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.FATAL]
-    if (msg_type_index >= 0) and (msg_type_index < len(log_levels)):
-        log_level = log_levels[msg_type_index]
-    else:
-        log_level = log_levels[-1]
+    # Convert Qt msg type to logging level. The enum values are not ordered
+    # by severity (QtInfoMsg was added last), so map them explicitly.
+    log_levels = {
+        QtMsgType.QtDebugMsg: logging.DEBUG,
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.FATAL,
+    }
+    log_level = log_levels.get(msg_type, logging.FATAL)
     qtcl = logging.getLogger(msg_log_context.category or "qt.???")
     # Some information may not be available unless using a PyQt debug build.
     # See: https://www.riverbankcomputing.com/static/Docs/PyQt5/api/qtcore/qmessagelogcontext.html

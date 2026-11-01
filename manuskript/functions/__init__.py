@@ -235,10 +235,12 @@ def outlineItemColors(item):
 
     # Label
     lbl = item.data(Outline.label)
-    if lbl == "":
+    # The label may refer to a row that has been removed in the settings
+    lblItem = mw.mdlLabels.item(toInt(lbl)) if lbl != "" else None
+    if lblItem is None:
         col = QColor(Qt.transparent)
     else:
-        col = iconColor(mw.mdlLabels.item(toInt(lbl)).icon())
+        col = iconColor(lblItem.icon())
     # if col == Qt.black:
     #     # Don't know why, but transparent is rendered as black
     #     col = QColor(Qt.transparent)

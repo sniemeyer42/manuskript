@@ -395,10 +395,12 @@ class outlineItem(abstractItem, searchableItem):
                     LOGGER.error("Character POV not found: %s", self.POV())
 
             elif c == self.enum.status:
-                searchIn = mainWindow.mdlStatus.item(F.toInt(self.status()), 0).text()
+                status = mainWindow.mdlStatus.item(F.toInt(self.status()), 0)
+                searchIn = status.text() if status else ""
 
             elif c == self.enum.label:
-                searchIn = mainWindow.mdlLabels.item(F.toInt(self.label()), 0).text()
+                label = mainWindow.mdlLabels.item(F.toInt(self.label()), 0)
+                searchIn = label.text() if label else ""
 
             else:
                 searchIn = self.data(c)
@@ -552,10 +554,14 @@ class outlineItem(abstractItem, searchableItem):
                 searchData = character.name()
 
         elif column == self.enum.status:
-            searchData = mainWindow.mdlStatus.item(F.toInt(self.status()), 0).text()
+            status = mainWindow.mdlStatus.item(F.toInt(self.status()), 0)
+            if status:
+                searchData = status.text()
 
         elif column == self.enum.label:
-            searchData = mainWindow.mdlLabels.item(F.toInt(self.label()), 0).text()
+            label = mainWindow.mdlLabels.item(F.toInt(self.label()), 0)
+            if label:
+                searchData = label.text()
 
         else:
             searchData = self.data(column)

@@ -38,7 +38,9 @@ class flatDataItemWrapper(searchableItem):
         return [self.translate("Summary"), self.translate(self.searchColumnLabel(column))]
 
     def searchData(self, column):
-        return self.qstandardItemModel.item(1, self.searchDataIndex(column)).text()
+        # In a new project, the items only exist once the field has been edited
+        item = self.qstandardItemModel.item(1, self.searchDataIndex(column))
+        return item.text() if item else None
 
     @staticmethod
     def searchDataIndex(column):

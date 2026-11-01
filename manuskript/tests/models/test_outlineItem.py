@@ -146,3 +146,33 @@ def test_modelStuff(outlineModelBasic):
     assert text3.ID() == "0"
     root.checkIDs()
     assert text3.ID() != "0"
+
+def test_removedLabelAndStatus(outlineModelBasic):
+    """
+    Labels and statuses are stored as row numbers. Removing a label or a
+    status in the settings must not make painting, searching or reference
+    infos crash for items still referring to it.
+    """
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtGui import QColor
+    from manuskript.functions import MW, outlineItemColors
+    from manuskript.models import references as Ref
+
+    model = outlineModelBasic
+    text = model.rootItem.child(1)
+    lastLabel = MW.mdlLabels.rowCount() - 1
+    lastStatus = MW.mdlStatus.rowCount() - 1
+    text.setData(text.enum.label, str(lastLabel))
+    text.setData(text.enum.status, str(lastStatus))
+    text.setData(text.enum.text, "Some text.")
+
+    # What settingsWindow.removeLabel() and removeStatus() do
+    MW.mdlLabels.removeRows(lastLabel, 1)
+    MW.mdlStatus.removeRows(lastStatus, 1)
+
+    assert outlineItemColors(text)["Label"] == QColor(Qt.transparent)
+    cols = [text.enum.status, text.enum.label]
+    assert text.findItemsContaining("e", cols, MW, False) == []
+    assert text.searchData(text.enum.status) is None
+    assert text.searchData(text.enum.label) is None
+    assert "<h1>Text</h1>" in Ref.infos(Ref.textReference(text.ID()))

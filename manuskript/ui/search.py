@@ -128,27 +128,33 @@ class search(QWidget, Ui_search):
                 # Set override cursor
                 qApp.setOverrideCursor(Qt.WaitCursor)
 
-                for model, modelName in [
-                    (mainWindow().mdlOutline, Model.Outline),
-                    (mainWindow().mdlCharacter, Model.Character),
-                    (flatDataModelWrapper(mainWindow().mdlFlatData), Model.FlatData),
-                    (mainWindow().mdlWorld, Model.World),
-                    (mainWindow().mdlPlots, Model.Plot)
-                ]:
-                    filteredColumns = self.searchMenu.columns(modelName)
+                try:
+                    for model, modelName in [
+                        (mainWindow().mdlOutline, Model.Outline),
+                        (mainWindow().mdlCharacter, Model.Character),
+                        (flatDataModelWrapper(mainWindow().mdlFlatData), Model.FlatData),
+                        (mainWindow().mdlWorld, Model.World),
+                        (mainWindow().mdlPlots, Model.Plot)
+                    ]:
+                        filteredColumns = self.searchMenu.columns(modelName)
 
-                    # Searching
-                    if len(filteredColumns):
-                        results += model.searchOccurrences(searchRegex, filteredColumns)
+                        # Searching
+                        if len(filteredColumns):
+                            results += model.searchOccurrences(searchRegex, filteredColumns)
 
-                # Showing results
-                self.generateResultsLists(results)
+                    # Showing results
+                    self.generateResultsLists(results)
 
-                # Remove override cursor
-                qApp.restoreOverrideCursor()
+                finally:
+                    # Remove override cursor
+                    qApp.restoreOverrideCursor()
             else:
                 # No results to generate if there is a problem with the regex
                 self.generateResultsLists(list())
+
+    def clearResults(self):
+        self.result.clear()
+        self.noResultsLabel.setVisible(False)
 
     def generateResultsLists(self, results):
         self.noResultsLabel.setVisible(len(results) == 0)

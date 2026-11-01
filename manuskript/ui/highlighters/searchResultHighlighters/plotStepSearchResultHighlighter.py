@@ -15,8 +15,10 @@ class plotStepSearchResultHighlighter(abstractSearchResultHighlighter):
 
     def openView(self, searchResult):
         r = Ref.plotReference(searchResult.id())
-        Ref.open(r)
+        if not Ref.open(r):
+            return False
         mainWindow().tabPlot.setEnabled(True)
+        return True
 
     def retrieveWidget(self, searchResult):
         textEditMap = {
