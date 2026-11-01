@@ -8,6 +8,8 @@ from PyQt5.QtGui import QBrush, QColor, QIcon
 from PyQt5.QtWidgets import QWidget, QFileDialog, QMessageBox, QStyle
 
 from manuskript.functions import writablePath, appPath, openURL, statusMessage
+from manuskript.functions import wordCount, charCount
+from manuskript import settings
 from manuskript.ui.importers.importer_ui import Ui_importer
 from manuskript.ui.importers.generalSettings import generalSettings
 from manuskript.ui import style
@@ -323,7 +325,28 @@ class importerDialog(QWidget, Ui_importer):
         # Do transformations
         items = self.doTransformations(items)
 
+        # Some importers set the texts directly, for speed
+        self.updateWordCounts(items)
+
         return True
+
+    def updateWordCounts(self, items):
+        """
+        Computes the word and char counts of the imported texts, then updates
+        the totals of their parents (only once per parent, see FIXME in
+        startImport).
+        """
+        parents = {}
+        for item in items:
+            if item.isText():
+                text = item.text()
+                item._data[Outline.wordCount] = wordCount(text)
+                item._data[Outline.charCount] = charCount(text, settings.countSpaces)
+                if item.parent():
+                    parents[id(item.parent())] = item.parent()
+
+        for parent in parents.values():
+            parent.updateWordCount()
 
     def doTransformations(self, items):
         """

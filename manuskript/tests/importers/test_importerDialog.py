@@ -82,3 +82,24 @@ def test_validOPML(importDialog, MWEmptyProject, tmp_path):
     assert shown == []
     assert [c.title() for c in MWEmptyProject.mdlOutline.rootItem.children()] == ["A"]
     assert not D.isVisible()
+
+
+@pytest.mark.parametrize("topLevelFolder", [False, True])
+def test_wordCountsAfterImport(importDialog, MWEmptyProject, tmp_path, topLevelFolder):
+    from manuskript.enums import Outline
+    D, select, shown = importDialog
+    path = tmp_path / "book.md"
+    path.write_text("# Part\n\n## Scene A\n\none two three four five\n\n"
+                    "## Scene B\n\nsix seven eight\n")
+    select("Internal", "Markdown")
+    D.settingsWidget.chkGeneralTopLevel.setChecked(topLevelFolder)
+    D.setFileName(str(path))
+    D.doImport()
+    assert shown == []
+
+    root = MWEmptyProject.mdlOutline.rootItem
+    part = root.child(0).child(0) if topLevelFolder else root.child(0)
+    assert part.title() == "Part"
+    assert [c.data(Outline.wordCount) for c in part.children()] == [5, 3]
+    assert part.data(Outline.wordCount) == 8
+    assert root.data(Outline.wordCount) == 8
