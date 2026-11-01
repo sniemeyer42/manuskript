@@ -11,7 +11,6 @@ from PyQt5.QtGui import QIcon, QBrush, QColor, QStandardItemModel, QStandardItem
 from PyQt5.QtWidgets import QWidget, QAction, QFileDialog, QSpinBox, QLineEdit, QLabel, QPushButton, QTreeWidgetItem, \
     qApp, QMessageBox
 
-from manuskript import loadSave
 from manuskript import settings
 from manuskript.enums import Outline
 from manuskript.functions import mainWindow, iconFromColor, appPath, writablePath, statusMessage
@@ -203,9 +202,13 @@ class welcome(QWidget, Ui_welcome):
                 filename += ".msk"
             if not settings.saveToZip and not self.checkProjectFolder(filename):
                 return
+            if not self.checkWritable(filename):
+                return
+            # If the project cannot be saved there, it stays where it was (saveProject()
+            # has told the user why).
+            if not self.mw.saveDatas(filename):
+                return
             self.appendToRecentFiles(filename)
-            loadSave.clearSaveCache()  # Ensure all file(s) are saved under new filename
-            self.mw.saveDatas(filename)
             # Update Window's project name with new filename
             pName = os.path.split(filename)[1]
             if pName.endswith('.msk'):
@@ -241,6 +244,22 @@ class welcome(QWidget, Ui_welcome):
             self.appendToRecentFiles(filename)
             self.loadDefaultDatas()
             self.mw.loadProject(filename, loadFromFile=False)
+
+    def checkWritable(self, filename):
+        """
+        Returns False, after telling the user why, if the project file filename cannot be
+        written (read-only folder, no permission...). saveProject() makes the same check,
+        but only logs it.
+        """
+        path = os.path.abspath(filename)
+        if not os.path.exists(path):
+            path = os.path.dirname(path)
+        if os.access(path, os.W_OK):
+            return True
+        QMessageBox.warning(self, self.tr("Project not saved"),
+            self.tr("The project cannot be saved as {}: you are not allowed to write to {}. "
+                    "Please choose another location.").format(filename, path))
+        return False
 
     def checkProjectFolder(self, filename):
         """

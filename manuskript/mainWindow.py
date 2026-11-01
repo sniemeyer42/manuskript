@@ -1256,6 +1256,26 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         if settings.autoSaveNoChanges:
             self.saveTimerNoChanges.start()
 
+    def isCurrentProjectFolder(self, filename):
+        """Returns True if a project saved as filename is stored in the folder of the
+        current project (a project saved in folders is stored in a folder named like the
+        project file, next to it). This is the case for the project's own file, and for a
+        file with another name whose folder is a link to the project's folder, but not for
+        a link to the project file under another name, next to another folder."""
+        if not self.currentProject:
+            return False
+        folder = os.path.splitext(filename)[0]
+        current = os.path.splitext(self.currentProject)[0]
+        try:
+            a, b = os.stat(folder), os.stat(current)
+        except OSError:  # One of them does not exist (e.g. a project saved to a single file)
+            a = b = None
+        # Some file systems have no file numbers (st_ino 0): then only the paths can tell.
+        if a and a.st_ino:
+            return os.path.samestat(a, b)
+        return os.path.normcase(os.path.abspath(folder)) == \
+            os.path.normcase(os.path.abspath(current))
+
     def submitPendingEdits(self):
         """
         Text editors submit their text to the models only some time after the
@@ -1269,8 +1289,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def saveDatas(self, projectName=None):
         """Saves the current project (in self.currentProject).
 
-        If ``projectName`` is given, currentProject becomes projectName.
-        In other words, it "saves as...".
+        If ``projectName`` is given, the project is saved there ("Save as..."), and
+        currentProject becomes projectName if this succeeds. If it fails, the project
+        stays where it was.
 
         Returns True if the project has been saved.
         """
@@ -1278,8 +1299,18 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self.submitPendingEdits()
 
         if projectName:
+            previousProject = self.currentProject
+            previousCache = None
+            # "Save as..." the project's own file (or another file whose folder is a link to
+            # the project's folder) saves into the same folder: what the save code knows
+            # about it stays true, as for a normal save. Starting with an empty cache would
+            # first remove the project's own folders (as those of an older project), with
+            # the files in them that could not be read when loading.
+            if not self.isCurrentProjectFolder(projectName):
+                # Everything is written to the new place
+                previousCache = loadSave.saveCacheState()
+                loadSave.clearSaveCache()
             self.currentProject = projectName
-            QSettings().setValue("lastProject", projectName)
 
         # Stop the timer before saving: if auto-saving fails (bugs out?) we don't want it
         # to keep trying and continuously hitting the failure condition. Nor do we want to
@@ -1293,9 +1324,23 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             LOGGER.error("There is no current project to save.")
             return False
 
-        r = loadSave.saveProject()  # version=0
+        r = False
+        try:
+            r = loadSave.saveProject()  # version=0
+        finally:
+            if projectName and not r:
+                # "Save as..." failed: the project is still where it was, and the cache and
+                # the items' last paths still describe that folder, so that the next save
+                # goes there as before. (If the project was saved into its own folder, they
+                # describe it as the failed save left it, as after a failed normal save.)
+                self.currentProject = previousProject
+                if previousCache is not None:
+                    loadSave.restoreSaveCache(previousCache)
 
-        projectName = os.path.basename(self.currentProject)
+        if projectName and r:
+            QSettings().setValue("lastProject", projectName)
+
+        projectName = os.path.basename(projectName or self.currentProject)
         if r:
             self.projectDirty = False  # successful save, clear dirty flag
 

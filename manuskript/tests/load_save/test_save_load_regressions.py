@@ -420,11 +420,15 @@ def test_zip_save_is_atomic(sampleProject, tmp_path, monkeypatch):
     def writestr(*args, **kwargs):
         raise OSError(28, "No space left on device")
 
+    shown = shownDialogs(monkeypatch)
     with monkeypatch.context() as m:
         m.setattr(zipfile.ZipFile, "writestr", writestr)
         MW.mdlOutline.setData(lastText(MW).index(Outline.text), "New text")
         assert not loadSave.saveProject()
 
+    # The user is told why
+    assert shown == [("Files not saved", "The following files could not be saved:",
+                      ["{} (No space left on device)".format(path)])]
     with zipfile.ZipFile(path) as zf:
         assert {f: zf.read(f) for f in zf.namelist()} == good
     assert [f for f in os.listdir(str(tmp_path)) if f.endswith(".tmp")] == []
