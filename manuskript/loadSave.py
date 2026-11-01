@@ -8,6 +8,7 @@ import zipfile
 
 import manuskript.load_save.version_0 as v0
 import manuskript.load_save.version_1 as v1
+from manuskript import snapshots
 from manuskript.functions import mainWindow
 
 import logging
@@ -118,7 +119,15 @@ def loadProject(project):
     if len(errors) > 0:
         return errors
 
+    read = {}
     if version == 0:
-        return v0.loadProject(project)
+        errors = v0.loadProject(project)
     else:
-        return v1.loadProject(project, zip=isZip)
+        errors = v1.loadProject(project, zip=isZip, read=read)
+
+    # A copy of what was on disk, outside the project folder (it does not stop the project
+    # from opening if it cannot be written)
+    if project not in errors:
+        snapshots.takeOpen(project, zip=isZip, read=read)
+
+    return errors

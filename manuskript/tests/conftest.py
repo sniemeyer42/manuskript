@@ -9,6 +9,31 @@ import shutil
 import pytest
 
 
+@pytest.fixture(scope="session", autouse=True)
+def snapshotRootForSession(tmp_path_factory):
+    """
+    Snapshots (manuskript/snapshots.py) are never written to the user's data folder, even
+    outside a test (see snapshotRoot).
+    """
+    from manuskript import snapshots
+    snapshots.root = str(tmp_path_factory.mktemp("snapshots-session"))
+    yield snapshots.root
+    snapshots.root = None
+
+
+@pytest.fixture(autouse=True)
+def snapshotRoot(snapshotRootForSession, tmp_path_factory):
+    """
+    Returns the folder where the snapshots of the test are written: a temporary folder of
+    its own, outside the test's tmp_path. Not set with monkeypatch: some tests undo their
+    monkeypatches.
+    """
+    from manuskript import snapshots
+    snapshots.root = str(tmp_path_factory.mktemp("snapshots"))
+    yield snapshots.root
+    snapshots.root = snapshotRootForSession
+
+
 def closePreviousProject(MW):
     """
     Closes the project that a previous test left open. It is a temporary copy,

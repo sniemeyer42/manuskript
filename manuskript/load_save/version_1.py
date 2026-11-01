@@ -20,6 +20,7 @@ from PyQt5.QtGui import QColor, QStandardItem
 from PyQt5.QtWidgets import QListWidgetItem
 
 from manuskript import settings
+from manuskript import snapshots
 from manuskript.enums import Character, World, Plot, PlotStep, Outline
 from manuskript.functions import mainWindow, iconColor, iconFromColorString
 from manuskript.converters import HTML2PlainText
@@ -181,7 +182,20 @@ def saveProject(zip=None):
     @param zip: if True, saves as a single file. If False, saves as plain-text. If None, tries to determine based on
     settings.
     @return: True if successful, False otherwise.
+
+    A successful save also takes the daily snapshot of the project, if it is due (see
+    manuskript/snapshots.py).
     """
+    serialized = []
+    saved = _saveProject(zip, serialized)
+    if saved and serialized:
+        snapshots.takeDaily(*serialized)
+    return saved
+
+
+def _saveProject(zip, serialized):
+    """saveProject(). Once the project is serialized, (project, files) is put into
+    serialized, a list."""
     if zip == None:
         zip = settings.saveToZip
 
@@ -377,6 +391,7 @@ def saveProject(zip=None):
     # Well, for now, we keep them here...
 
     files.append(("settings.txt", settings.save(protocol=0)))
+    serialized[:] = [project, files]
 
     # We check if the file exist and we have write access. If the file does
     # not exist, we check the parent folder, because it might be a new project.
@@ -864,11 +879,13 @@ def outlineToMMD(item):
 # LOAD
 ########################################################################################################################
 
-def loadProject(project, zip=None):
+def loadProject(project, zip=None, read=None):
     """
     Loads a project.
     @param project: the filename of the project to open.
     @param zip: whether the project is a zipped or not.
+    @param read: a dict, or None. If the project is loaded from a folder, the files read from
+    it are put there ({path relative to the folder: content}), for its snapshot.
     @return: an array of errors, empty if None.
     """
 
@@ -990,6 +1007,8 @@ def loadProject(project, zip=None):
         cache = files
         freshTarget = False
         unreadable = dict(notRead)
+        if read is not None:
+            read.update(files)
 
         # FIXME: watch directory for changes
 
