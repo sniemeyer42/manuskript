@@ -881,11 +881,34 @@ def loadProject(project, zip=None):
     LOGGER.debug("Loading {} ({})".format(project, "zip" if zip else "folder"))
     if zip:
         files = loadFilesFromZip(project)
+        notRead = OrderedDict()
 
-        # Decode files
-        for f in files:
-            if f[-4:] not in [".xml", "opml"]:
-                files[f] = files[f].decode("utf-8")
+        for f in list(files):
+            # Hidden files are not loaded, as in a project folder. Manuskript does not write
+            # them into a project file, but a snapshot of a project folder (.gitignore...) or
+            # an archiving program (__MACOSX/._*) may.
+            if any(c[:1] == "." for c in f.split(os.sep)):
+                del files[f]
+
+            # Decode files. One that is not UTF-8 is reported, and not loaded (as in a project
+            # folder), instead of making the whole project fail to load.
+            elif f[-4:] not in [".xml", "opml"]:
+                try:
+                    files[f] = files[f].decode("utf-8")
+                except UnicodeDecodeError as e:
+                    LOGGER.error("Cannot read file %s in %s: %s", f, project, e)
+                    notRead[f] = str(e)
+                    del files[f]
+
+        errors += list(notRead)
+        # The project files at the root are needed, as in a project folder
+        failed = [f for f in notRead if f in projectFiles]
+        if notRead:
+            showFilesNotLoaded(mw, project, notRead, failed=bool(failed), zip=True)
+        if failed:
+            LOGGER.error("Project %s cannot be loaded: some files cannot be read.", project)
+            errors.append(project)
+            return errors
 
     else:
         # Project path
@@ -1218,12 +1241,13 @@ def loadProject(project, zip=None):
     return errors
 
 
-def showFilesNotLoaded(mw, path, notRead, failed=False):
+def showFilesNotLoaded(mw, path, notRead, failed=False, zip=False):
     """
     Tells the user which files of the project folder could not be read.
-    @param path: the project folder
+    @param path: the project folder (or the project file, if zip)
     @param notRead: {relative path: reason}
     @param failed: True if the project cannot be opened because of them
+    @param zip: True if they are in a single-file project
     """
     dlg = ListDialog(mw)
     dlg.setModal(True)
@@ -1231,6 +1255,11 @@ def showFilesNotLoaded(mw, path, notRead, failed=False):
     if failed:
         dlg.label.setText(dlg.tr("The following files could not be read, so the project "
                                  "cannot be opened:"))
+    elif zip:
+        # Saving to a single file writes only what has been loaded
+        dlg.label.setText(dlg.tr("The following files of the project file could not be read. "
+                                 "They are not loaded, and they are not kept when the project "
+                                 "is saved:"))
     else:
         dlg.label.setText(dlg.tr("The following files could not be read. They are not loaded, "
                                  "and they are left untouched when the project is saved:"))

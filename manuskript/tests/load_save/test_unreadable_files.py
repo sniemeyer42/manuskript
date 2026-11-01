@@ -6,6 +6,7 @@ sync tool, I/O errors...): they must never be saved without these files."""
 
 import os
 import shutil
+import zipfile
 
 import pytest
 
@@ -423,3 +424,65 @@ def test_unreadable_scene_that_cannot_be_moved(MW, tmp_path, monkeypatch):
             [("Jesus taken up into heaven", text + "\nCaf\xe9\n")]
     finally:
         MW.closeProject()
+
+
+def zipProject(folder, path, extra={}):
+    """Writes the files of the project folder folder and extra ({name: bytes}) to the
+    single-file project path."""
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, content in sorted(snapshot(folder).items()):
+            zf.writestr(name.replace(os.sep, "/"), content)
+        for name, content in extra.items():
+            zf.writestr(name, content)
+    return path
+
+
+def test_open_single_file_project_with_hidden_and_undecodable_files(MW, tmp_path, monkeypatch):
+    """In a single-file project, hidden files are not loaded, as in a project folder (before,
+    a hidden scene was loaded, and a hidden binary file made the project fail to open). A
+    file that is not UTF-8 is reported and not loaded, instead of the project failing to
+    open."""
+    path = copySample(tmp_path)
+    MW.closeProject()
+    MW.loadProject(path)
+    expected = tree(MW), [c.name() for c in MW.mdlCharacter.characters]
+    MW.closeProject()
+
+    scene = "title:          {}\nID:             {}\ntype:           md\n\n\nText\n"
+    zipped = zipProject(path[:-4], str(tmp_path / "zipped.msk"), {
+        "outline/.hidden.md": scene.format("Hidden", 901).encode("utf-8"),
+        "characters/.DS_Store": b"Name: Bud1\n",
+        "__MACOSX/outline/._0-Jerusalem": b"\x00\x05\x16\x07\xff",
+        "outline/99-Latin.md": scene.format("Été", 902).encode("latin-1"),
+    })
+    shown = shownDialogs(monkeypatch)
+    MW.loadProject(zipped)
+    try:
+        assert MW.currentProject == zipped
+        assert (tree(MW), [c.name() for c in MW.mdlCharacter.characters]) == expected
+        assert len(shown) == 1
+        title, label, items = shown[0]
+        assert (title, label) == (
+            "Files not loaded", "The following files of the project file could not be read. "
+            "They are not loaded, and they are not kept when the project is saved:")
+        assert len(items) == 1
+        assert items[0].startswith(os.path.join(zipped, "outline", "99-Latin.md") + " (")
+    finally:
+        MW.closeProject()
+
+
+def test_open_single_file_project_with_undecodable_main_file(MW, tmp_path, monkeypatch):
+    """As in a project folder, a single-file project is not opened if one of its main files
+    cannot be read: it would be saved without it."""
+    path = copySample(tmp_path)
+    with open(os.path.join(path[:-4], "summary.txt"), "wb") as f:
+        f.write("Situation:  Été\n".encode("latin-1"))
+    zipped = zipProject(path[:-4], str(tmp_path / "zipped.msk"))
+    shown = shownDialogs(monkeypatch)
+    MW.closeProject()
+    MW.loadProject(zipped)
+    assert MW.currentProject is None
+    assert [(t, l) for t, l, i in shown] == [
+        ("Files not loaded", "The following files could not be read, so the project cannot "
+                             "be opened:")]
+    assert [i.split(" (")[0] for i in shown[0][2]] == [os.path.join(zipped, "summary.txt")]
