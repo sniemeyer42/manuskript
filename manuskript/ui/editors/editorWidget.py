@@ -480,6 +480,11 @@ class editorWidget(QWidget, Ui_editorWidget_ui):
             return
 
         if self.getCurrentItemView() == self.txtRedacText:
+            # The item's text is split, so it must hold what was just typed.
+            # Ctrl+K keeps the focus in the editor, so no focus-out has
+            # submitted it.
+            self.txtRedacText.submitPendingChanges()
+
             c = self.txtRedacText.textCursor()
 
             title = c.selectedText()
