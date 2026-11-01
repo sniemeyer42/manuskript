@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # --!-- coding: utf8 --!--
 
-from manuskript.importer.abstractImporter import abstractImporter
+from manuskript.importer.abstractImporter import abstractImporter, readTextFile
 from manuskript.models import outlineItem
 from manuskript.enums import Outline
 from manuskript.functions import safeTranslate
@@ -64,11 +64,13 @@ class markdownImporter(abstractImporter):
         """
 
         if not fromString:
-            # Read file
-            with open(filePath, 'rt', encoding="utf-8") as f:
-                txt = f.read()
+            # Read file (raises ValueError if it is not a text file)
+            txt = readTextFile(filePath)
         else:
             txt = fromString
+
+        # pandoc writes CRLF line endings on Windows
+        txt = txt.replace("\r\n", "\n").replace("\r", "\n")
 
         items = []
 
@@ -89,7 +91,16 @@ class markdownImporter(abstractImporter):
             items.append(child)
             return child
 
-        ATXHeader = re.compile(r"(\#+)\s*(.+?)\s*\#*$")
+        # "#" to "######", up to three leading spaces and optional closing
+        # hashes, like CommonMark. The space after the hashes is optional
+        # ("#Title"), as in older versions and in the editor.
+        ATXHeader = re.compile(r"^ {0,3}(#{1,6})(?!#)[ \t]*(.+?)(?:[ \t]+#+)?[ \t]*$")
+        # Scene breaks such as "###", "# # #" or "# * * *" are not headers
+        sceneBreak = re.compile(r"^[#*_\-\s]*$")
+        # Lines inside fenced code blocks are never headers. Only ``` fences
+        # that are closed count: "~~~" or a lone "```" are often scene breaks.
+        openFence = re.compile(r"^ {0,3}(`{3,})[^`]*$")
+        closeFence = re.compile(r"^ {0,3}(`{3,})[ \t]*$")
         setextHeader1 = re.compile(r"([^\#-=].+)\n(===+)$", re.MULTILINE)
         setextHeader2 = re.compile(r"([^\#-=].+)\n(---+)$", re.MULTILINE)
 
@@ -97,6 +108,25 @@ class markdownImporter(abstractImporter):
         parent.__miLevel = 0  # markdown importer header level
 
         txt = txt.split("\n")
+
+        # Find the lines of the code blocks
+        inCode = [False] * len(txt)
+        unclosed = None  # Length of a fence that is never closed
+        i = 0
+        while i < len(txt):
+            m = openFence.match(txt[i])
+            if m and not (unclosed and len(m.group(1)) >= unclosed):
+                for j in range(i + 1, len(txt)):
+                    c = closeFence.match(txt[j])
+                    if c and len(c.group(1)) >= len(m.group(1)):
+                        inCode[i:j + 1] = [True] * (j + 1 - i)
+                        i = j
+                        break
+                else:
+                    # Later fences at least as long are not closed either
+                    unclosed = len(m.group(1))
+            i += 1
+
         skipNextLine = False
         for i in range(len(txt)):
 
@@ -110,9 +140,14 @@ class markdownImporter(abstractImporter):
                 skipNextLine = False
                 continue
 
+            # Fenced code block
+            if inCode[i]:
+                content += l + "\n"
+                continue
+
             # Check ATX Header
             m = ATXHeader.match(l)
-            if m:
+            if m and not sceneBreak.match(m.group(2)):
                 header = True
                 level = len(m.group(1))
                 name = m.group(2)

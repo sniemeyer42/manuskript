@@ -13,6 +13,17 @@ import codecs
 import logging
 LOGGER = logging.getLogger(__name__)
 
+
+def levelValue(values, level):
+    """Returns the granular content setting for the given item level.
+
+    The outline can be deeper than the table the settings come from, in
+    which case the value of the deepest known level is used."""
+    if level < len(values):
+        return values[level]
+    return values[-1] if values else True
+
+
 class plainText(basicFormat):
     name = safeTranslate(qApp, "Export", "Plain text")
     description = safeTranslate(qApp, "Export", """Simplest export to plain text. Allows you to use your own markup not understood
@@ -124,7 +135,7 @@ class plainText(basicFormat):
         r = ""
 
         # Do we include item
-        if not item.compile() or s["Content"]["IgnoreCompile"]:
+        if not item.compile() and not s["Content"]["IgnoreCompile"]:
             return ""
 
         # What do we include
@@ -133,18 +144,18 @@ class plainText(basicFormat):
 
             if item.isFolder():
                 if not s["Content"]["More"] and s["Content"]["FolderTitle"] or\
-                       s["Content"]["More"] and s["Content"]["FolderTitle"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["FolderTitle"], l):
 
                     r += self.processTitle(item.title(), l, settings)
 
             elif item.isText():
                 if not s["Content"]["More"] and s["Content"]["TextTitle"] or \
-                       s["Content"]["More"] and s["Content"]["TextTitle"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["TextTitle"], l):
 
                     r += self.processTitle(item.title(), l, settings)
 
                 if not s["Content"]["More"] and s["Content"]["TextText"] or \
-                       s["Content"]["More"] and s["Content"]["TextText"][l]:
+                       s["Content"]["More"] and levelValue(s["Content"]["TextText"], l):
 
                     r += self.processText(item.text(), settings)
 
@@ -153,6 +164,11 @@ class plainText(basicFormat):
         # Add item children
         last = None
         for c in item.children():
+
+            # Excluded or empty items must not add a separator
+            child = self.concatenate(c, settings)
+            if not child:
+                continue
 
             # Separator
             if last:
@@ -169,7 +185,7 @@ class plainText(basicFormat):
                 elif last == "md" and c.type() == "folder":
                     content += s["Separator"]["TF"]
 
-            content += self.concatenate(c, settings)
+            content += child
 
             last = c.type()
 
@@ -196,15 +212,18 @@ class plainText(basicFormat):
                 o = content
                 content = content.replace("  ", " ")
 
+        # Local copy: the settings are shared by every processed text
+        rules = list(s["Custom"])
+
         if s["DoubleQuotes"]:
             q = s["DoubleQuotes"].split("___")
-            s["Custom"].append([True, '"(.*?)"', "{}\\1{}".format(q[0], q[1]), True])
+            rules.append([True, '"(.*?)"', "{}\\1{}".format(q[0], q[1]), True])
 
         if s["SingleQuote"]:
             q = s["SingleQuote"].split("___")
-            s["Custom"].append([True, "'(.*?)'", "{}\\1{}".format(q[0], q[1]), True])
+            rules.append([True, "'(.*?)'", "{}\\1{}".format(q[0], q[1]), True])
 
-        for enabled, A, B, reg in s["Custom"]:
+        for enabled, A, B, reg in rules:
             if not enabled:
                 continue
 

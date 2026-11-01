@@ -89,6 +89,13 @@ class opmlImporter(abstractImporter):
             children = underElement.findall('outline')
 
             if children != None and len(children) > 0:
+                if body:
+                    # Keep the outline's own text (e.g. the introduction of a
+                    # chapter) as its first text item, like markdownImporter
+                    intro = outlineItem(parent=card, title=title, _type='md')
+                    intro.setData(Outline.text, body)
+                    items.append(intro)
+
                 for el in children:
                     items.extend(cls.parseItems(el, card))
             else:

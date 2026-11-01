@@ -45,7 +45,7 @@ class pandocExporter(basicExporter):
     def version(self):
         if self.isValid():
             r = self.run(["--version"])
-            return r.split("\n")[0]
+            return r.split("\n")[0] if r else ""
         else:
             return ""
 
@@ -84,12 +84,19 @@ class pandocExporter(basicExporter):
 
         qApp.setOverrideCursor(QCursor(Qt.WaitCursor))
 
-        p = subprocess.Popen(
-            args,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        try:
+            p = subprocess.Popen(
+                args,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        except OSError as e:
+            qApp.restoreOverrideCursor()
+            err = safeTranslate(qApp, "Export", "Could not run pandoc ({}):\n{}").format(run, e)
+            LOGGER.error(err)
+            QMessageBox.critical(mainWindow().dialog, safeTranslate(qApp, "Export", "Error"), err)
+            return None
 
         if not type(src) == bytes:
             src = src.encode("utf-8")  # assumes utf-8
@@ -103,13 +110,14 @@ class pandocExporter(basicExporter):
             err = "%s on export\n" % err_type \
                 + "Return code: %d\n" % p.returncode \
                 + "Command and parameters:\n%s\n" % p.args \
-                + "Stderr content:\n" + stderr.decode("utf-8")
+                + "Stderr content:\n" + stderr.decode("utf-8", errors="replace")
             if p.returncode != 0:
                 LOGGER.error(err)
                 QMessageBox.critical(mainWindow().dialog, safeTranslate(qApp, "Export", "Error"), err)
+                return None
             else:
+                # Only warnings (e.g. duplicate note references): keep the output
                 LOGGER.warning(err)
-            return None
 
         return stdout.decode("utf-8")
 

@@ -7,7 +7,7 @@ from manuskript.importer.opmlImporter import opmlImporter
 from manuskript.importer.markdownImporter import markdownImporter
 from manuskript.functions import safeTranslate
 
-from PyQt5.QtWidgets import qApp
+from PyQt5.QtWidgets import qApp, QMessageBox
 
 
 class pandocImporter(abstractImporter):
@@ -38,9 +38,15 @@ class pandocImporter(abstractImporter):
 
         args += self.extraArgs
 
-        r = pandocExporter().run(args)
+        pandoc = pandocExporter()
+        r = pandoc.run(args)
 
         if r == None:
+            # Damaged or protected file, wrong format...
+            QMessageBox.critical(settingsWidget,
+                                 safeTranslate(qApp, "Import", "Pandoc import"),
+                                 safeTranslate(qApp, "Import", "Pandoc could not convert the file:") +
+                                 "\n" + pandoc.lastError)
             return None
 
         if formatTo == "opml":

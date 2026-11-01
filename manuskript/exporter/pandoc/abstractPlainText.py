@@ -174,7 +174,7 @@ class pandocSettings(markdownSettings):
         # pandoc v2.8+
         "shift-heading":  pandocSetting("--shift-heading-level-by=", "number", "",
                                       safeTranslate(qApp, "Export", "Specify the base level for headers: "),
-                                      default=0, min=0, minVersion="2.8"),
+                                      default=0, min=-5, minVersion="2.8"),
         "disable-YAML": pandocSetting("EXT-yaml_metadata_block", "checkbox", "",
                                       safeTranslate(qApp, "Export", "Disable YAML metadata block.\nUse that if you get YAML related error."),
                                       minVersion="1.12"),
@@ -191,7 +191,7 @@ class pandocSettings(markdownSettings):
                                       safeTranslate(qApp, "Export", "Use ATX-style headers"), specific=True,
                                       minVersion="1.9", maxVersion="2.11.1"),
         # pandoc v2.11.2+
-        "atx-heading": pandocSetting("--markdown-headings=atx|setext", "checkbox", "markdown asciidoc",
+        "atx-heading": pandocSetting("--markdown-headings=atx", "checkbox", "markdown asciidoc",
                                      safeTranslate(qApp, "Export", "Use ATX-style headers"), specific=True,
                                      minVersion="2.11.2"),
         "self-contained": pandocSetting("--self-contained", "checkbox", "html",
@@ -298,9 +298,9 @@ class pandocSettings(markdownSettings):
             l.addWidget(label, 8)
             s.widget = QSpinBox()
             s.widget.setValue(s.default if s.default else 0)
-            if s.min:
+            if s.min is not None:
                 s.widget.setMinimum(s.min)
-            if s.max:
+            if s.max is not None:
                 s.widget.setMaximum(s.max)
             if s.suffix:
                 s.widget.setSuffix(s.suffix)

@@ -11,6 +11,9 @@ from manuskript.functions import mainWindow, writablePath
 from manuskript.ui.exporters.manuskript.plainTextSettings_ui import Ui_exporterSettings
 from manuskript.ui import style as S
 
+import logging
+LOGGER = logging.getLogger(__name__)
+
 
 class exporterSettings(QWidget, Ui_exporterSettings):
     def __init__(self, _format, parent=None):
@@ -128,19 +131,30 @@ class exporterSettings(QWidget, Ui_exporterSettings):
     def loadSettings(self):
         filename = self.getSettingsPath()
         if os.path.exists(filename):
-            with open(filename, 'r', encoding="utf-8") as f:
-                self.settings = json.load(f)
-            self.updateFromSettings()
+            try:
+                with open(filename, 'r', encoding="utf-8") as f:
+                    self.settings = json.load(f)
+                self.updateFromSettings()
+                return
+            except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
+                # Empty, truncated or incomplete file: use default values
+                LOGGER.warning("Ignoring invalid exporter settings %s: %s", filename, e)
+                self.settings = {}
 
         # Default values
-        else:
-            self.getSettings()
+        self.getSettings()
 
     def writeSettings(self):
         self.getSettings()
-        with open(self.getSettingsPath(), 'w', encoding="utf-8", newline="\n") as f:
+        # Write through a symbolic link instead of replacing it
+        filename = os.path.realpath(self.getSettingsPath())
+        # Write to a temporary file first, so that an interrupted write
+        # never leaves a truncated exporter.ini behind.
+        tmpFilename = filename + ".tmp"
+        with open(tmpFilename, 'w', encoding="utf-8", newline="\n") as f:
             # json.dumps(json.loads(json.dumps(allSettings)), indent=4, sort_keys=True)
             json.dump(self.settings, f, indent=4, sort_keys=True)
+        os.replace(tmpFilename, filename)
 
     def getSettingsPath(self):
         return os.path.join(writablePath(), "exporter.ini")
@@ -158,16 +172,18 @@ class exporterSettings(QWidget, Ui_exporterSettings):
             self.tblContent.item(1, 2).setCheckState(Qt.Checked if s["TextText"] else Qt.Unchecked)
 
         else:
-            nLevel = len(s["FolderTitle"])
+            # The table layout depends on the current outline depth, which
+            # can differ from the one the settings were saved with.
+            nLevel = (self.tblContent.rowCount() - 2) // 2
             for i in range(nLevel):
                 item = self.tblContent.item(i + 2, 1)
-                if item:
+                if item and i < len(s["FolderTitle"]):
                     item.setCheckState(Qt.Checked if s["FolderTitle"][i] else Qt.Unchecked)
                 item = self.tblContent.item(i + 2 + nLevel, 1)
-                if item:
+                if item and i < len(s["TextTitle"]):
                     item.setCheckState(Qt.Checked if s["TextTitle"][i] else Qt.Unchecked)
                 item = self.tblContent.item(i + 2 + nLevel, 2)
-                if item:
+                if item and i < len(s["TextText"]):
                     item.setCheckState(Qt.Checked if s["TextText"][i] else Qt.Unchecked)
 
         self.chkContentIgnoreCompile.setChecked(s["IgnoreCompile"])

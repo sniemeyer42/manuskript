@@ -4,12 +4,11 @@ import os
 import shutil
 import subprocess
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import qApp, QMessageBox
+from PyQt5.QtCore import Qt, QSettings
+from PyQt5.QtWidgets import qApp
 from PyQt5.QtGui import QCursor
 
 from manuskript.converters import abstractConverter
-from manuskript.functions import mainWindow, safeTranslate
 
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -23,15 +22,20 @@ class pandocConverter(abstractConverter):
     def isValid(self):
         if self.path() != None:
             return 2
-        elif self.customPath() and os.path.exists(self.customPath):
+
+        customPath = self.customPath()
+        if customPath and os.path.isfile(customPath) and \
+                os.access(customPath, os.X_OK):
             return 1
         else:
             return 0
 
     @classmethod
     def customPath(self):
+        # Path set in the exporters manager for the pandoc exporter
+        # (manuskript.exporter.pandoc.pandocExporter.name is "Pandoc")
         settings = QSettings()
-        return settings.value("Exporters/{}_customPath".format(self.name), "")
+        return settings.value("Exporters/Pandoc_customPath", "")
 
     @classmethod
     def path(self):
@@ -39,9 +43,9 @@ class pandocConverter(abstractConverter):
 
     @classmethod
     def convert(self, src, _from="markdown", to="html", args=None, outputfile=None):
-        if not self.isValid:
+        if not self.isValid():
             LOGGER.error("pandocConverter is called but not valid.")
-            return ""
+            return None
 
         cmd = [self.runCmd()]
 
@@ -56,12 +60,17 @@ class pandocConverter(abstractConverter):
 
         qApp.setOverrideCursor(QCursor(Qt.WaitCursor))
 
-        p = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
+        try:
+            p = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+        except OSError as e:
+            qApp.restoreOverrideCursor()
+            LOGGER.error("Could not run pandoc: %s", e)
+            return None
 
         if not type(src) == bytes:
             src = src.encode("utf-8")  # assumes utf-8
@@ -70,12 +79,13 @@ class pandocConverter(abstractConverter):
 
         qApp.restoreOverrideCursor()
 
-        if stderr:
-            err = stderr.decode("utf-8")
-            LOGGER.error(err)
-            QMessageBox.critical(mainWindow().dialog,
-                                 safeTranslate(qApp, "Export", "Error"), err)
-            return None
+        if stderr or p.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace")
+            if p.returncode != 0:
+                # No message box: this also runs while loading a project
+                LOGGER.error("pandoc returned %d: %s", p.returncode, err)
+                return None
+            LOGGER.warning(err)
 
         return stdout.decode("utf-8")
 
@@ -84,4 +94,4 @@ class pandocConverter(abstractConverter):
         if self.isValid() == 2:
             return self.cmd
         elif self.isValid() == 1:
-            return self.customPath
+            return self.customPath()

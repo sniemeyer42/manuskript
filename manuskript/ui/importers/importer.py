@@ -8,6 +8,8 @@ from PyQt5.QtGui import QBrush, QColor, QIcon
 from PyQt5.QtWidgets import QWidget, QFileDialog, QMessageBox, QStyle
 
 from manuskript.functions import writablePath, appPath, openURL, statusMessage
+from manuskript.functions import wordCount, charCount
+from manuskript import settings
 from manuskript.ui.importers.importer_ui import Ui_importer
 from manuskript.ui.importers.generalSettings import generalSettings
 from manuskript.ui import style
@@ -15,6 +17,9 @@ from manuskript import importer
 from manuskript.models import outlineModel, outlineItem
 from manuskript.enums import Outline
 from manuskript.exporter.pandoc import pandocExporter
+
+import logging
+LOGGER = logging.getLogger(__name__)
 
 class importerDialog(QWidget, Ui_importer):
 
@@ -250,7 +255,9 @@ class importerDialog(QWidget, Ui_importer):
         """
         Called by the Import button.
         """
-        self.startImport(self.mw.mdlOutline)
+        if not self.startImport(self.mw.mdlOutline):
+            # Import failed and the user was told why: keep the dialog open
+            return
 
         # Signal every views that important model changes have happened.
         self.mw.mdlOutline.layoutChanged.emit()
@@ -284,6 +291,9 @@ class importerDialog(QWidget, Ui_importer):
         ID = self.settingsWidget.importUnderID()
         parentItem = outlineModel.getItemByID(ID)
 
+        # To remove what has been added if the import fails
+        topItem, topCount = parentItem, parentItem.childCount()
+
         # Import in top-level folder?
         if self.settingsWidget.importInTopLevelFolder():
             parent = outlineItem(title=os.path.basename(self.fileName),
@@ -292,16 +302,51 @@ class importerDialog(QWidget, Ui_importer):
             items.append(parent)
 
         # Calling the importer
-        rItems = F.startImport(self.fileName,
-                              parentItem,
-                              self.settingsWidget)
+        try:
+            rItems = F.startImport(self.fileName,
+                                  parentItem,
+                                  self.settingsWidget)
+        except Exception as e:
+            # Invalid or damaged file: don't let it close the application
+            LOGGER.exception("Could not import %s.", self.fileName)
+            QMessageBox.critical(self, self.tr("Import error"),
+                                 self.tr("Could not import {}:\n{}").format(
+                                     os.path.basename(self.fileName), e))
+            rItems = None
+
+        if rItems is None:
+            # The import failed (importers report why): undo what was added
+            while topItem.childCount() > topCount:
+                topItem.removeChild(topItem.childCount() - 1)
+            return False
 
         items.extend(rItems)
 
         # Do transformations
         items = self.doTransformations(items)
 
+        # Some importers set the texts directly, for speed
+        self.updateWordCounts(items)
+
         return True
+
+    def updateWordCounts(self, items):
+        """
+        Computes the word and char counts of the imported texts, then updates
+        the totals of their parents (only once per parent, see FIXME in
+        startImport).
+        """
+        parents = {}
+        for item in items:
+            if item.isText():
+                text = item.text()
+                item._data[Outline.wordCount] = wordCount(text)
+                item._data[Outline.charCount] = charCount(text, settings.countSpaces)
+                if item.parent():
+                    parents[id(item.parent())] = item.parent()
+
+        for parent in parents.values():
+            parent.updateWordCount()
 
     def doTransformations(self, items):
         """

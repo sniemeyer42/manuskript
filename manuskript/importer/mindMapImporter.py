@@ -96,32 +96,39 @@ class mindMapImporter(abstractImporter):
         url = underElement.get('LINK', None)
 
         # Rich text content
-        content = ""
-        content = underElement.find("richcontent")
-        if content != None:
+        notes = []
+        for content in underElement.findall("richcontent"):
             # In Freemind, can be note or node
             # Note: it's a note
             # Node: it's the title of the node, in rich text
             content_type = content.get("TYPE", "NOTE")
-            content = ET.tostring(content.find("html"))
+            html = content.find("html")
+            if html is not None:
+                html = ET.tostring(html)
+            else:
+                # Freeplane can store plain text or markdown instead of html
+                text = "".join(content.itertext()).strip()
+                if not text:
+                    continue
 
-        if content and content_type == "NODE":
-            # Content is title
-            # convert rich text title (in html) to plain text
-            title = HTML2PlainText(content) #.replace("\n", " ").strip()
-            # Count the number of lines
-            lines = [l.strip() for l in title.split("\n") if l.strip()]
+            if content_type == "NODE":
+                # Content is title
+                # convert rich text title (in html) to plain text
+                title = HTML2PlainText(html) if html is not None else text
+                # Count the number of lines
+                lines = [l.strip() for l in title.split("\n") if l.strip()]
 
-            # If there is one line, we use it as title.
-            # Otherwise we leave it to be inserted as a note.
-            if len(lines) == 1:
-                item.setData(Outline.title, "".join(lines))
-                content = ""
+                # If there is one line, we use it as title.
+                # Otherwise we leave it to be inserted as a note.
+                if len(lines) == 1:
+                    item.setData(Outline.title, "".join(lines))
+                    continue
 
-        if content:
+            notes.append(HTML2MD(html) if html is not None else text)
+
+        if notes:
             # Set the note content as text value
-            content = HTML2MD(content)
-            item.setData(Outline.notes, content)
+            item.setData(Outline.notes, "\n\n".join(notes))
 
         if url:
             # Set the url in notes

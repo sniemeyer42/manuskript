@@ -5,10 +5,10 @@ import shutil
 import subprocess
 
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtWidgets import QWidget, qApp
 
 from manuskript.models import outlineItem
-from manuskript.functions import mainWindow
+from manuskript.functions import mainWindow, safeTranslate
 
 import logging
 LOGGER = logging.getLogger(__name__)
@@ -23,6 +23,7 @@ class basicExporter:
     icon = ""
     absentTip = ""  # A tip displayed when exporter is absent.
     absentURL = ""  # URL to open if exporter is absent.
+    lastError = ""  # Why the last call to run() failed.
 
     def __init__(self):
         settings = QSettings()
@@ -43,7 +44,8 @@ class basicExporter:
     def isValid(self):
         if self.path() != None:
             return 2
-        elif self.customPath and os.path.exists(self.customPath):
+        elif self.customPath and os.path.isfile(self.customPath) and \
+                os.access(self.customPath, os.X_OK):
             return 1
         else:
             return 0
@@ -60,10 +62,28 @@ class basicExporter:
         elif self.isValid() == 1:
             run = self.customPath
         else:
+            self.lastError = safeTranslate(qApp, "Export", "No command for {}.").format(self.name)
             LOGGER.error("No command for %s.", self.name)
             return None
-        r = subprocess.check_output([run] + args)  # timeout=.2
-        return r.decode("utf-8")
+
+        try:
+            p = subprocess.run([run] + args, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE)  # timeout=.2
+        except OSError as e:
+            self.lastError = str(e)
+            LOGGER.error("Could not run %s: %s", run, e)
+            return None
+
+        stderr = p.stderr.decode("utf-8", errors="replace")
+        if p.returncode != 0:
+            self.lastError = stderr.strip() or \
+                safeTranslate(qApp, "Export", "Return code: {}").format(p.returncode)
+            LOGGER.error("%s returned %d:\n%s", run, p.returncode, stderr)
+            return None
+        elif stderr:
+            LOGGER.warning("%s:\n%s", run, stderr)
+
+        return p.stdout.decode("utf-8")
 
         # Example of how to run a command
         #
