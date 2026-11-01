@@ -33,7 +33,6 @@ def test_outlineItemsProperties(outlineItemFolder, outlineItemText):
     assert folder.isFolder() == True
     assert text.isFolder() == False
     assert text.isText() == True
-    assert text.isMD() == text.isMMD() == True
     assert text.title() == "Text"
     assert text.compile() == True
     assert folder.POV() == ""

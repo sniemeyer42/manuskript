@@ -117,7 +117,6 @@ class folderImporter(abstractImporter):
         # Add group
         group = self.addGroup(widget.toolBox.widget(0),
                               safeTranslate(qApp, "Import", "Folder import"))
-        #group = cls.addPage(widget, "Folder import")
 
         self.addSetting("info", "label",
                         safeTranslate(qApp, "Import", """<p><b>Info:</b> Imports a whole

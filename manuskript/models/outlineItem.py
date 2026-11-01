@@ -51,12 +51,6 @@ class outlineItem(abstractItem, searchableItem):
     def isText(self):
         return self._data[self.enum.type] == "md"
 
-    def isMD(self):
-        return self._data[self.enum.type] == "md"
-
-    def isMMD(self):
-        return self._data[self.enum.type] == "md"
-
     def text(self):
         return self.data(self.enum.text)
 
@@ -101,9 +95,6 @@ class outlineItem(abstractItem, searchableItem):
             )
 
     __repr__ = __str__
-
-    def charCount(self):
-        return self._data.get(self.enum.charCount, 0)
 
     #######################################################################
     # Data

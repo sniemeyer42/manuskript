@@ -190,13 +190,6 @@ class MDEditView(textEditView):
         l = len(text) - len(text.lstrip())
         return text[:l]
 
-    def getPriorMarkdownBlockItemStart(self, itemRegex):
-        text = self.textCursor().block().text()
-        if itemRegex.indexIn(text) >= 0:
-            return text[itemRegex.matchedLength():]
-
-        return ""
-
     ###########################################################################
     # TypeWriterScrolling
     ###########################################################################
@@ -433,15 +426,6 @@ class MDEditView(textEditView):
                 line = line[match.end():]
             cleared.append(line.strip()) # also indented code block
         return "\n".join(cleared)
-
-    def clearedFormatForStats(self, text):
-        # Remove stuff that musn't be counted
-        # FIXME: clear also block formats
-        for reg, rep, flags in [
-            ("<!--.*?-->", "", re.S), # comments
-            ]:
-            text = re.sub(reg, rep, text, flags=flags)
-        return text
 
     def titleSetext(self, level):
         cursor = self.textCursor()

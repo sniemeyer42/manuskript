@@ -67,9 +67,6 @@ class HighlightTokenizer:
     def requestBacktrack(self):
         self.backtrack = True
 
-    def tokenLessThan(self, t1, t2):
-        return t1.getPosition() < t2.getPosition()
-
 
 class MarkdownTokenizer(HighlightTokenizer):
 

@@ -582,42 +582,10 @@ class MarkdownHighlighter(BasicHighlighter):
     # SETTINGS
     ###########################################################################
 
-    def setHighlighted(self, words, tags):
-        rehighlight = (self.highlightedWords != words
-                       or self.highlightedTags != tags)
-        self.highlightedWords = words
-        self.highlightedTags = tags
-        if rehighlight:
-            self.rehighlight()
-
-    def setSearched(self, expression, regExp=False, caseSensitivity=False):
-        """
-        Define an expression currently searched, to be highlighted.
-        Can be regExp.
-        """
-        rehighlight = self.searchExpression != expression or \
-                      self.searchExpressionRegExp != regExp or \
-                      self.searchExpressionCase != caseSensitivity
-        self.searchExpression = expression
-        self.searchExpressionRegExp = regExp
-        self.searchExpressionCase = caseSensitivity
-        if rehighlight:
-            self.rehighlight()
-
     def setDictionary(self, dictionary):
         self.dictionary = dictionary
         if self.spellCheckEnabled:
             self.rehighlight()
-
-    def increaseFontSize(self):
-        self._defaultCharFormat.setFontPointSize(
-            self._defaultCharFormat.font().pointSize() + 1.0)
-        self.rehighlight()
-
-    def decreaseFontSize(self):
-        self._defaultCharFormat.setFontPointSize(
-            self._defaultCharFormat.font().pointSize() - 1.0)
-        self.rehighlight()
 
     def setEnableLargeHeadingSizes(self, enable):
         self.setupHeadingFontSize(enable)
@@ -640,53 +608,19 @@ class MarkdownHighlighter(BasicHighlighter):
             for i in MTT.TITLES:
                 self.theme[i]["deltaSize"] = 0
 
-    def setUseUnderlineForEmphasis(self, enable):
-        self.useUndlerlineForEmphasis = enable
-        self.rehighlight()
-
     def setFont(self, fontFamily, fontSize):
         font = QFont(family=fontFamily, pointSize=fontSize,
                      weight=QFont.Normal, italic=False)
         self._defaultCharFormat.setFont(font)
         self.rehighlight()
 
-    def setSpellCheckEnabled(self, enabled):
-        self.spellCheckEnabled = enabled
-        self.rehighlight()
-
-    def setBlockquoteStyle(self, style):
-        self.blockquoteStyle = style
-
-        if style == BS.BlockquoteStyleItalic:
-            self.emphasizeToken[MTT.TokenBlockquote] = True
-        else:
-            self.emphasizeToken[MTT.TokenBlockquote] = False
-
-        self.rehighlight()
-
-    def setHighlightLineBreaks(self, enable):
-        self.highlightLineBreaks = enable
-        self.rehighlight()
-
     ###########################################################################
     # GHOSTWRITER SPECIFIC?
     ###########################################################################
 
-    def onTypingResumed(self):
-        self.typingPaused = False
-
-    def onTypingPaused(self):
-        self.typingPaused = True
-        block = self.document().findBlock(self.editor.textCursor().position())
-        self.rehighlightBlock(block)
-
     def onHighlightBlockAtPosition(self, position):
         block = self.document().findBlock(position)
         self.rehighlightBlock(block)
-
-    def onTextBlockRemoved(self, block):
-        if self.isHeadingBlockState(block.userState):
-            self.headingRemoved.emit(block.position())
 
     ###########################################################################
     # SPELLCHECK
@@ -763,25 +697,3 @@ class MarkdownHighlighter(BasicHighlighter):
             MS.MarkdownStateAtxHeading6,
             MS.MarkdownStateSetextHeading1Line1,
             MS.MarkdownStateSetextHeading2Line1,]
-
-
-def getLuminance(color):
-    return (0.30 * color.redF()) + \
-           (0.59 * color.greenF()) + \
-           (0.11 * color.blueF())
-
-
-def applyAlphaToChannel(foreground, background, alpha):
-    return (foreground * alpha) + (background * (1.0 - alpha))
-
-
-def applyAlpha(foreground, background, alpha):
-    blendedColor = QColor(0, 0, 0)
-    normalizedAlpha = alpha / 255.0
-    blendedColor.setRed(applyAlphaToChannel(
-        foreground.red(), background.red(), normalizedAlpha))
-    blendedColor.setGreen(applyAlphaToChannel(
-        foreground.green(), background.green(), normalizedAlpha))
-    blendedColor.setBlue(applyAlphaToChannel(
-        foreground.blue(), background.blue(), normalizedAlpha))
-    return blendedColor

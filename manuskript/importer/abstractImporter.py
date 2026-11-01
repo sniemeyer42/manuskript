@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 from PyQt5.QtCore import QSettings
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QCheckBox, QHBoxLayout, \
+from PyQt5.QtWidgets import QVBoxLayout, QCheckBox, QHBoxLayout, \
                             QLabel, QSpinBox, QComboBox, QLineEdit, qApp
 from manuskript.ui.collapsibleGroupBox2 import collapsibleGroupBox2
 from manuskript.ui import style
@@ -103,19 +103,6 @@ class abstractImporter:
         Takes a QWidget that can be modified and must be returned.
         """
         return widget
-
-    def addPage(self, widget, title):
-        """
-        Convenience function to add a page to the settingsWidget `widget`, at
-        the end.
-
-        Returns the page widget.
-        """
-        w = QWidget(widget)
-        w.setLayout(QVBoxLayout())
-        widget.toolBox.insertItem(widget.toolBox.count(), w, title)
-        widget.toolBox.layout().setSpacing(0)
-        return w
 
     def addGroup(self, parent, title):
         """

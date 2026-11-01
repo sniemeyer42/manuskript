@@ -209,17 +209,6 @@ class characterModel(QAbstractItemModel, searchableModel):
             else:
                 return C(section).name
 
-    def addCharacterInfo(self, ID):
-        c = self.getCharacterByID(ID)
-        self.beginInsertRows(c.index(), len(c.infos), len(c.infos))
-        c.infos.append(CharacterInfo(
-            c,
-            description=self.tr("Description"),
-            value=self.tr("Value")
-        ))
-        self.endInsertRows()
-
-        mainWindow().updatePersoInfoView()
     def addCharacterInfo(self, ID, description, value):
         c = self.getCharacterByID(ID)
         self.beginInsertRows(c.index(), len(c.infos), len(c.infos))

@@ -678,15 +678,3 @@ class abstractModel(QAbstractItemModel):
 
         self.rootItem = outlineItem(model=self, xml=ET.tostring(root), ID="0")
         self.rootItem.checkIDs()
-
-    def indexFromPath(self, path):
-        path = path.split(",")
-        item = self.rootItem
-
-        if not item:
-            return None
-
-        for p in path:
-            if p != "" and int(p) < item.childCount():
-                item = item.child(int(p))
-        return self.indexFromItem(item)

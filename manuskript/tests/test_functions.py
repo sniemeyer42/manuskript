@@ -92,7 +92,6 @@ def test_mainWindow():
     assert F.MW != None
 
     F.statusMessage("Test")
-    F.printObjects()
     assert len(F.findWidgetsOfClass(QWidget)) > 0
     assert len(F.findWidgetsOfClass(QLCDNumber)) == 0
 

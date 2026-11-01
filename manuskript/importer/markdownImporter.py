@@ -211,7 +211,6 @@ class markdownImporter(abstractImporter):
         # Add group
         group = self.addGroup(widget.toolBox.widget(0),
                               safeTranslate(qApp, "Import", "Markdown import"))
-        #group = cls.addPage(widget, "Folder import")
 
         self.addSetting("info", "label",
                         safeTranslate(qApp, "Import", """<b>Info:</b> A very simple

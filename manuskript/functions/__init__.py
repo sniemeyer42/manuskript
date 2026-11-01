@@ -7,7 +7,7 @@ import sys
 import pathlib
 from random import *
 
-from PyQt5.QtCore import Qt, QRect, QStandardPaths, QObject, QProcess, QRegExp
+from PyQt5.QtCore import Qt, QRect, QStandardPaths, QProcess, QRegExp
 from PyQt5.QtCore import QDir, QUrl, QTimer, QLocale
 from PyQt5.QtGui import QBrush, QIcon, QPainter, QColor, QImage, QPixmap
 from PyQt5.QtGui import QDesktopServices
@@ -314,14 +314,6 @@ def tempFile(name):
     return os.path.join(QDir.tempPath(), name)
 
 
-def totalObjects():
-    return len(mainWindow().findChildren(QObject))
-
-
-def printObjects():
-    print("Objects:", str(totalObjects()))
-
-
 def findWidgetsOfClass(cls):
     """
     Returns all widgets, children of MainWindow, whose class is cls.
@@ -475,20 +467,6 @@ def getSaveFileNameWithSuffix(parent, caption, directory, filter, options=None, 
     if (dialog.exec() == QFileDialog.Accepted):
         return dialog.selectedFiles()[0], dialog.selectedNameFilter()
     return None, None
-
-def inspect():
-    """
-    Debugging tool. Call it to see a stack of calls up to that point.
-    """
-    import inspect, os
-    print("-----------------------")
-    for s in inspect.stack()[1:]:
-        print(" * {}:{} // {}".format(
-            os.path.basename(s.filename),
-            s.lineno,
-            s.function))
-        print("   " + "".join(s.code_context))
-
 
 def search(searchRegex, text):
     """

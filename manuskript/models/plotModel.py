@@ -78,15 +78,6 @@ class plotModel(QStandardItemModel, searchableModel):
                 return importance
         return "0"  # Default to "Minor"
 
-    def getSubPlotTextsByID(self, plotID, subplotRaw):
-        """Returns a tuple (name, summary) for the subplot whose raw in the model
-        is ``subplotRaw``, of plot whose ID is ``plotID``.
-        """
-        plotIndex = self.getIndexFromID(plotID)
-        name = plotIndex.child(subplotRaw, PlotStep.name).data()
-        summary = plotIndex.child(subplotRaw, PlotStep.summary).data()
-        return name, summary
-
     def getIndexFromID(self, ID):
         for i in range(self.rowCount()):
             _ID = self.item(i, Plot.ID).text()

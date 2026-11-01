@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import QTextEdit
 
 from manuskript.converters.abstractConverter import abstractConverter
 from manuskript.converters.pandocConverter import pandocConverter
-#from manuskript.converters.markdownConverter import markdownConverter
 
 
 def HTML2MD(html):

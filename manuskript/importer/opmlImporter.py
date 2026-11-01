@@ -31,7 +31,6 @@ class opmlImporter(abstractImporter):
             # We have a filePath, so we read the file
             try:
                 with open(filePath, 'rb') as opmlFile:
-                    #opmlContent = cls.saveNewlines(opmlFile.read())
                     opmlContent = opmlFile.read()
             except:
                 QMessageBox.critical(settingsWidget,
@@ -103,17 +102,6 @@ class opmlImporter(abstractImporter):
                 card.setData(Outline.text, body)
 
         return items
-
-    @classmethod
-    def saveNewlines(cls, inString):
-        """
-        Since XML parsers are notorious for stripping out significant newlines,
-        save them in a form we can restore after the parse.
-        """
-        inString = inString.replace("\r\n", "\n")
-        inString = inString.replace("\n", "{{lf}}")
-
-        return inString
 
     @classmethod
     def restoreNewLines(cls, inString):
