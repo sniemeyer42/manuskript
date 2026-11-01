@@ -14,7 +14,9 @@ from manuskript.functions import mainWindow
 import logging
 LOGGER = logging.getLogger(__name__)
 
-def saveProject(version=None):
+def saveProject(version=None, source=None):
+    """@param source: for "Save as...", the project file the project is saved from (see
+    version_1.saveProject())."""
 
     # While debugging, we don't save the project
     # return
@@ -22,7 +24,12 @@ def saveProject(version=None):
     if version == 0:
         return v0.saveProject()
     else:
-        return v1.saveProject()
+        return v1.saveProject(source=source)
+
+
+def keepBeforeReplacing(project, zip):
+    """See version_1.keepBeforeReplacing()."""
+    return v1.keepBeforeReplacing(project, zip)
 
 
 def clearSaveCache():

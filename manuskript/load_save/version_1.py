@@ -173,7 +173,7 @@ def isUnreadable(path):
                for u in unreadable)
 
 
-def saveProject(zip=None):
+def saveProject(zip=None, source=None):
     """
     Saves the project. If zip is False, the project is saved as a multitude of plain-text files for the most parts
     and some XML or zip? for settings and stuff.
@@ -181,16 +181,57 @@ def saveProject(zip=None):
     collaborative work, versioning, or third-party editing.
     @param zip: if True, saves as a single file. If False, saves as plain-text. If None, tries to determine based on
     settings.
+    @param source: for "Save as...", the project file the project is saved from: it stays the
+    current project if the save fails.
     @return: True if successful, False otherwise.
 
-    A successful save also takes the daily snapshot of the project, if it is due (see
-    manuskript/snapshots.py).
+    A successful save also takes the daily snapshot of the project, if it is due. A save
+    that fails, or does not write all files, takes an "unsaved" snapshot of the project
+    (see manuskript/snapshots.py), among the snapshots of source if it is given (and is not
+    a snapshot), where File > Open snapshot... looks.
     """
     serialized = []
-    saved = _saveProject(zip, serialized)
-    if saved and serialized:
-        snapshots.takeDaily(*serialized)
+    saved = False
+    try:
+        saved = _saveProject(zip, serialized)
+    finally:
+        # Also if saving raised an exception
+        if serialized and saved:
+            snapshots.takeDaily(*serialized)
+        elif serialized:
+            project, files = serialized
+            if source and not snapshots.isSnapshot(source):
+                project = source
+            snapshots.takeUnsaved(project, files)
     return saved
+
+
+def keepBeforeReplacing(project, zip):
+    """
+    Before a save removes or writes over an older project (a "Save as...", or a new project,
+    onto it): keeps what is on disk of it in a "disk" snapshot. Returns True if it is kept
+    completely. Otherwise, tells the user that the project is not saved there, and why, and
+    returns False: nothing must be removed, the snapshot is the only copy Manuskript makes.
+    @param project: the project file of the older project
+    @param zip: True for a single-file project, False for a project folder
+    """
+    problems = []
+    if snapshots.takeDisk(project, zip=zip, problems=problems):
+        return True
+    LOGGER.error("Cannot save project: the older project %s cannot be kept in a snapshot, so "
+                 "it is not replaced.", project)
+    dlg = ListDialog(mainWindow())
+    dlg.setModal(True)
+    dlg.setWindowTitle(dlg.tr("Project not saved"))
+    dlg.label.setText(dlg.tr(
+        "Saving the project there replaces an older project: {}. Manuskript first keeps a copy "
+        "of the older project in its snapshot folder. This copy could not be made completely, "
+        "so the older project is left as it is, and the project is not saved there. Use "
+        "\"Save as...\" to save it somewhere else. Details:").format(project))
+    for p in problems:
+        QListWidgetItem(p, dlg.listWidget)
+    dlg.open()
+    return False
 
 
 def _saveProject(zip, serialized):
@@ -461,6 +502,13 @@ def _saveProject(zip, serialized):
                     [f for f in os.listdir(target) if f[:1] != "."]
             except OSError:
                 notEmpty = True
+
+            # A single-file project with the name of the project file is replaced by it at the
+            # end of the save (e.g. a new project created over it): it is kept in a snapshot
+            # first, before anything is removed. If it cannot be kept, it is not replaced.
+            if zipfile.is_zipfile(project) and not keepBeforeReplacing(project, zip=True):
+                return False
+
             if notEmpty:
                 if not os.path.isfile(os.path.join(target, "MANUSKRIPT")):
                     LOGGER.error("Cannot save project: the folder %s already exists and is not "
@@ -476,6 +524,10 @@ def _saveProject(zip, serialized):
                     dlg.open()
                     return False
 
+                # The older project is replaced: it is kept in a snapshot first. If it cannot
+                # be kept completely, nothing is removed.
+                if not keepBeforeReplacing(project, zip=False):
+                    return False
                 removing = target
                 try:
                     for sub in ["outline", "characters"]:

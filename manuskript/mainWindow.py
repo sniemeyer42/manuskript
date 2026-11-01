@@ -3,6 +3,7 @@
 import importlib
 import os
 import re
+import zipfile
 
 from PyQt5.Qt import qVersion, PYQT_VERSION_STR
 from PyQt5.QtCore import (pyqtSignal, QSignalMapper, QTimer, QSettings, Qt, QPoint,
@@ -1307,6 +1308,13 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             # first remove the project's own folders (as those of an older project), with
             # the files in them that could not be read when loading.
             if not self.isCurrentProjectFolder(projectName):
+                # Saved to a single file, the project replaces another single-file project
+                # there: it is kept in a snapshot first, and not replaced if it cannot be.
+                # (Saved to a folder, saveProject() does the same with an older project
+                # there.)
+                if settings.saveToZip and zipfile.is_zipfile(projectName) and \
+                        not loadSave.keepBeforeReplacing(projectName, zip=True):
+                    return False
                 # Everything is written to the new place
                 previousCache = loadSave.saveCacheState()
                 loadSave.clearSaveCache()
@@ -1326,7 +1334,11 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         r = False
         try:
-            r = loadSave.saveProject()  # version=0
+            if projectName:
+                # If it fails, its "unsaved" snapshot is one of the project saved from
+                r = loadSave.saveProject(source=previousProject)
+            else:
+                r = loadSave.saveProject()  # version=0
         finally:
             if projectName and not r:
                 # "Save as..." failed: the project is still where it was, and the cache and

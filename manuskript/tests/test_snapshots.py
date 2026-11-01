@@ -8,12 +8,14 @@ import hashlib
 import logging
 import os
 import re
+import shutil
+import sys
 import time
 import zipfile
 
 import pytest
 
-from manuskript import settings, snapshots
+from manuskript import loadSave, settings, snapshots
 from manuskript.enums import Outline
 from manuskript.load_save import version_1
 from manuskript.tests.conftest import closePreviousProject
@@ -631,6 +633,346 @@ def test_daily_snapshot_of_a_new_project(MW, tmp_path, clock):
         assert names(path) == []
         assert MW.saveDatas()
         assert names(path) == ["20261101-123005-daily.msk"]
+    finally:
+        closePreviousProject(MW)
+
+
+###############################################################################
+# UNSAVED
+###############################################################################
+
+def failWriting(monkeypatch, paths):
+    """version_1.writeFile() fails for the files in paths."""
+    realWrite = version_1.writeFile
+
+    def writeFile(filename, *args, **kwargs):
+        if filename in paths:
+            raise OSError(28, "No space left on device", filename)
+        return realWrite(filename, *args, **kwargs)
+
+    monkeypatch.setattr(version_1, "writeFile", writeFile)
+
+
+def unsaved(project):
+    folder = snapshots.projectFolder(project)
+    return [entries(os.path.join(folder, n)) for n in names(project, "unsaved")]
+
+
+def sceneOf(MW):
+    return MW.mdlOutline.rootItem.child(0).child(0).child(0)
+
+
+def test_unsaved_snapshot_when_files_are_not_saved(MW, tmp_path, monkeypatch, clock):
+    """A save that leaves files unwritten ("Files not saved") takes an "unsaved" snapshot of
+    the project. Saving again without a change takes none (e.g. a file locked for a long
+    time on Windows), nor does a successful save."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    try:
+        scene = sceneOf(MW)
+        filename = os.path.join(path[:-4], scene._lastPath)
+        name = scene._lastPath.replace(os.sep, "/")
+        shown = shownDialogs(monkeypatch)
+        failWriting(monkeypatch, [filename])
+        MW.mdlOutline.setData(scene.index(Outline.text), "Not on disk")
+        assert not MW.saveDatas()
+        assert [t for t, l, i in shown] == ["Files not saved"]
+        [snapshot] = unsaved(path)
+        assert snapshot[name].endswith(b"\n\nNot on disk")
+        assert snapshot["MANUSKRIPT"] == b"1"
+        assert names(path, "daily") == []
+
+        clock[0] += datetime.timedelta(minutes=5)
+        assert not MW.saveDatas()
+        assert len(unsaved(path)) == 1
+        MW.mdlOutline.setData(scene.index(Outline.text), "Still not on disk")
+        assert not MW.saveDatas()
+        first, second = unsaved(path)
+        assert first[name].endswith(b"\n\nNot on disk")
+        assert second[name].endswith(b"\n\nStill not on disk")
+        monkeypatch.undo()
+        assert MW.saveDatas()
+        assert len(unsaved(path)) == 2
+    finally:
+        closePreviousProject(MW)
+
+
+def test_unsaved_snapshot_of_a_single_file_project(MW, tmp_path, monkeypatch):
+    """The same when a single-file project cannot be written ("Files not saved")."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    zipped = str(tmp_path / "zipped.msk")
+    serialized(MW, tmp_path, "zipped.msk")
+    closePreviousProject(MW)
+    MW.loadProject(zipped)
+    try:
+        assert settings.saveToZip
+        shown = shownDialogs(monkeypatch)
+        failWriting(monkeypatch, [zipped])
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Not on disk")
+        assert not MW.saveDatas()
+        assert [t for t, l, i in shown] == ["Files not saved"]
+        [snapshot] = unsaved(zipped)
+        assert snapshot[sceneOf(MW)._lastPath.replace(os.sep, "/")].endswith(b"Not on disk")
+        with zipfile.ZipFile(zipped) as zf:
+            assert not any(b"Not on disk" in zf.read(n) for n in zf.namelist())
+    finally:
+        closePreviousProject(MW)
+
+
+def test_unsaved_snapshot_when_saving_raises(MW, tmp_path, monkeypatch):
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    try:
+        def writeFile(*args, **kwargs):
+            raise ValueError("bug")
+
+        monkeypatch.setattr(version_1, "writeFile", writeFile)
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Not on disk")
+        with pytest.raises(ValueError):
+            loadSave.saveProject()
+        [snapshot] = unsaved(path)
+        assert snapshot[sceneOf(MW)._lastPath.replace(os.sep, "/")].endswith(b"Not on disk")
+    finally:
+        closePreviousProject(MW)
+
+
+def saveAs(MW, monkeypatch, target):
+    """File > Save as... target."""
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *args: warnings.append(args[2]) or QMessageBox.Ok)
+    shown = shownDialogs(monkeypatch)
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args: (target, ""))
+    uncaught = []
+    with monkeypatch.context() as m:
+        m.setattr(sys, "excepthook", lambda *exc: uncaught.append(exc[1]))
+        MW.actSaveAs.trigger()
+    assert uncaught == []
+    return warnings, shown
+
+
+def olderProject(tmp_path, name="older"):
+    """Another copy of the sample project, with other infos. Returns its .msk file."""
+    (tmp_path / name).mkdir()
+    older = copySample(tmp_path / name)
+    write(os.path.join(older[:-4], "infos.txt"), "Title:          The older project\n")
+    write(os.path.join(older[:-4], "notes.txt"), "My notes\r\n")
+    return older
+
+
+###############################################################################
+# DISK
+###############################################################################
+
+def test_disk_snapshot_before_save_as_onto_an_older_project(MW, tmp_path, monkeypatch, clock):
+    """"Save as..." onto a folder that holds an older project removes its files: a "disk"
+    snapshot of it is taken first."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    older = olderProject(tmp_path)
+    before = snapshots.readFolder(older)
+    MW.loadProject(path)
+    try:
+        assert saveAs(MW, monkeypatch, older) == ([], [])
+        assert MW.currentProject == older
+        [name] = names(older, "disk")
+        disk = entries(os.path.join(snapshots.projectFolder(older), name))
+        assert disk == before
+        assert disk["infos.txt"] == b"Title:          The older project\n"
+        assert disk["notes.txt"] == b"My notes\n"
+        with open(os.path.join(older[:-4], "infos.txt"), "rb") as f:
+            assert b"The older project" not in f.read()
+
+        # Not for the next saves
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Saved")
+        assert MW.saveDatas()
+        assert len(names(older, "disk")) == 1
+    finally:
+        closePreviousProject(MW)
+
+
+def test_failed_save_as_onto_an_older_project(MW, tmp_path, monkeypatch, clock):
+    """The older project could not be removed ("Project not saved"): there is a "disk"
+    snapshot of it, and an "unsaved" one of the project, among the snapshots of the project
+    saved from (which stays the current project, File > Open snapshot... shows them)."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    older = olderProject(tmp_path)
+    before = snapshots.readFolder(older)
+    MW.loadProject(path)
+    try:
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Not saved as")
+
+        def rmtree(path, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", path)
+
+        monkeypatch.setattr(version_1.shutil, "rmtree", rmtree)
+        warnings, shown = saveAs(MW, monkeypatch, older)
+        assert [t for t, l, i in shown] == ["Project not saved"]
+        assert MW.currentProject == path
+        assert [entries(os.path.join(snapshots.projectFolder(older), n))
+                for n in names(older, "disk")] == [before]
+        [snapshot] = unsaved(path)
+        assert snapshot[sceneOf(MW)._lastPath.replace(os.sep, "/")].endswith(b"Not saved as")
+        assert names(older, "unsaved") == []
+    finally:
+        closePreviousProject(MW)
+
+
+def test_older_project_that_cannot_be_kept_is_not_replaced(MW, tmp_path, monkeypatch):
+    """"Save as..." onto an older project removes its files only if its "disk" snapshot holds
+    all of them. Otherwise nothing is removed, and the user is told why ("Project not
+    saved"). Files outside outline/ and characters/ are not removed: they do not count."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    older = olderProject(tmp_path)
+    write(os.path.join(older[:-4], "characters", "9-Locked.txt"), "Name: Locked\n")
+    infos = os.path.join(older[:-4], "infos.txt")
+    MW.loadProject(path)
+    try:
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Not saved as")
+        # The snapshot folder cannot be created
+        root = snapshots.root
+        write(str(tmp_path / "file"), "not a folder")
+        monkeypatch.setattr(snapshots, "root", str(tmp_path / "file" / "snapshots"))
+        warnings, shown = saveAs(MW, monkeypatch, older)
+        [(title, label, items)] = shown
+        assert title == "Project not saved" and older in label and "Save as..." in label
+        # On Windows the message quotes the path with doubled backslashes
+        assert len(items) == 1
+        assert str(tmp_path / "file") in items[0].replace("\\\\", "\\")
+        assert MW.currentProject == path
+        with open(infos, "rb") as f:
+            assert b"The older project" in f.read()
+
+        # A file that cannot be read
+        monkeypatch.setattr(snapshots, "root", root)
+        realOpen = open
+
+        def openFile(f, *args):
+            if os.path.basename(f) == "9-Locked.txt":
+                raise PermissionError(13, "Permission denied", f)
+            return realOpen(f, *args)
+
+        monkeypatch.setattr(snapshots, "open", openFile, raising=False)
+        warnings, shown = saveAs(MW, monkeypatch, older)
+        assert [i for t, l, i in shown] == [["characters/9-Locked.txt (Permission denied)"]]
+        assert MW.currentProject == path
+        assert os.path.isfile(os.path.join(older[:-4], "characters", "9-Locked.txt"))
+        with open(infos, "rb") as f:
+            assert b"The older project" in f.read()
+        # A snapshot of the rest is there, and one of the project, which is not saved
+        [disk] = names(older, "disk")
+        assert "infos.txt" in entries(os.path.join(snapshots.projectFolder(older), disk))
+        [snapshot] = unsaved(path)
+        assert snapshot[sceneOf(MW)._lastPath.replace(os.sep, "/")].endswith(b"Not saved as")
+
+        # Large files: those of the project are in the snapshot, the others stay
+        monkeypatch.setattr(snapshots, "open", realOpen, raising=False)
+        monkeypatch.setattr(snapshots, "MAX_FILE_SIZE", 100)
+        write(os.path.join(older[:-4], "characters", "9-Locked.txt"), "Name: Large\n" * 20)
+        write(os.path.join(older[:-4], "research", "large.pdf"), "x" * 200)
+        assert saveAs(MW, monkeypatch, older) == ([], [])
+        assert MW.currentProject == older
+        disk = entries(os.path.join(snapshots.projectFolder(older), names(older, "disk")[-1]))
+        assert disk["characters/9-Locked.txt"] == b"Name: Large\n" * 20
+        assert disk["infos.txt"] == b"Title:          The older project\n"
+        assert "research/large.pdf" not in disk
+        assert not os.path.exists(os.path.join(older[:-4], "characters", "9-Locked.txt"))
+        assert os.path.isfile(os.path.join(older[:-4], "research", "large.pdf"))
+    finally:
+        closePreviousProject(MW)
+
+
+def test_older_project_with_a_file_name_that_is_not_utf8(MW, tmp_path, monkeypatch):
+    """Its disk snapshot holds the file (as outline/caf%E9.md), so it is replaced."""
+    if os.name == "nt":
+        pytest.skip("file names are Unicode")
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    older = olderProject(tmp_path)
+    try:
+        write(os.fsencode(older[:-4]) + b"/outline/caf\xe9.md", b"Latin-1 name")
+    except OSError:
+        pytest.skip("the file system does not take such names")
+    MW.loadProject(path)
+    try:
+        assert saveAs(MW, monkeypatch, older) == ([], [])
+        assert MW.currentProject == older
+        [name] = names(older, "disk")
+        disk = entries(os.path.join(snapshots.projectFolder(older), name))
+        assert disk["outline/caf%E9.md"] == b"Latin-1 name"
+        assert not os.path.exists(os.fsencode(older[:-4]) + b"/outline/caf\xe9.md")
+    finally:
+        closePreviousProject(MW)
+
+
+def test_disk_snapshot_of_a_single_file_project_that_is_replaced(MW, tmp_path, monkeypatch):
+    """A new project created over a single-file project replaces it with its project file,
+    a "Save as..." to a single file replaces it with itself: a "disk" snapshot of it is
+    taken first."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    zipped = str(tmp_path / "zipped.msk")
+    serialized(MW, tmp_path, "zipped.msk")
+    other = str(tmp_path / "other.msk")
+    shutil.copyfile(zipped, other)
+    before = entries(zipped)
+
+    # Save as..., to a single file. Not if it cannot be kept.
+    monkeypatch.setattr(settings, "saveToZip", True)
+    MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Saved as")
+    root = snapshots.root
+    write(str(tmp_path / "file"), "not a folder")
+    monkeypatch.setattr(snapshots, "root", str(tmp_path / "file" / "snapshots"))
+    warnings, shown = saveAs(MW, monkeypatch, zipped)
+    assert [t for t, l, i in shown] == ["Project not saved"]
+    assert MW.currentProject == path
+    assert entries(zipped) == before
+    monkeypatch.setattr(snapshots, "root", root)
+    assert saveAs(MW, monkeypatch, zipped) == ([], [])
+    assert MW.currentProject == zipped
+    [name] = names(zipped, "disk")
+    assert entries(os.path.join(snapshots.projectFolder(zipped), name)) == before
+    # Not for the next saves
+    assert MW.saveDatas()
+    assert len(names(zipped, "disk")) == 1
+    closePreviousProject(MW)
+
+    # New project. Not saved there if the single-file project cannot be kept.
+    MW.welcome.createFile(other, overwrite=True)
+    try:
+        assert MW.currentProject == other
+        monkeypatch.setattr(snapshots, "root", str(tmp_path / "file" / "snapshots"))
+        shown = shownDialogs(monkeypatch)
+        assert not MW.saveDatas()
+        assert [t for t, l, i in shown] == ["Project not saved"]
+        assert entries(other) == before
+        assert not os.path.exists(other[:-4])
+        monkeypatch.setattr(snapshots, "root", root)
+        assert MW.saveDatas()
+        assert not zipfile.is_zipfile(other)
+        [name] = names(other, "disk")
+        assert entries(os.path.join(snapshots.projectFolder(other), name)) == before
+    finally:
+        closePreviousProject(MW)
+
+
+def test_no_disk_snapshot_for_a_new_folder(MW, tmp_path, monkeypatch):
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    try:
+        target = str(tmp_path / "new.msk")
+        assert saveAs(MW, monkeypatch, target) == ([], [])
+        assert MW.currentProject == target
+        assert names(target, "disk") == [] and names(path, "disk") == []
     finally:
         closePreviousProject(MW)
 
