@@ -14,6 +14,9 @@ import time
 import zipfile
 
 import pytest
+from PyQt5.QtCore import QSettings
+from PyQt5.QtGui import QCloseEvent
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from manuskript import loadSave, settings, snapshots
 from manuskript.enums import Outline
@@ -741,8 +744,7 @@ def test_unsaved_snapshot_when_saving_raises(MW, tmp_path, monkeypatch):
 
 
 def saveAs(MW, monkeypatch, target):
-    """File > Save as... target."""
-    from PyQt5.QtWidgets import QFileDialog, QMessageBox
+    """File > Save as... target. Returns (QMessageBox.warning texts, ListDialogs)."""
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning",
                         lambda *args: warnings.append(args[2]) or QMessageBox.Ok)
@@ -973,6 +975,283 @@ def test_no_disk_snapshot_for_a_new_folder(MW, tmp_path, monkeypatch):
         assert saveAs(MW, monkeypatch, target) == ([], [])
         assert MW.currentProject == target
         assert names(target, "disk") == [] and names(path, "disk") == []
+    finally:
+        closePreviousProject(MW)
+
+
+###############################################################################
+# RESTORE
+###############################################################################
+
+def takeSnapshot(MW, tmp_path):
+    """Opens a copy of the sample project. Returns its path and its open snapshot."""
+    closePreviousProject(MW)
+    path = copySample(tmp_path)
+    MW.loadProject(path)
+    assert MW.currentProject == path
+    return path, os.path.join(snapshots.projectFolder(path), names(path, "open")[0])
+
+
+def chooseSnapshot(MW, monkeypatch, choice):
+    """File > Open snapshot..., where the user chooses choice ("": Cancel). Returns the
+    folder the dialog was opened in."""
+    asked = []
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        lambda parent, title, folder, filters: asked.append(folder) or
+                        (choice, ""))
+    assert MW.actOpenSnapshot.isEnabled()
+    assert MW.actOpenSnapshot in MW.menuFile.actions()
+    MW.actOpenSnapshot.trigger()
+    [folder] = asked
+    return folder
+
+
+def test_open_snapshot_from_the_menu(MW, tmp_path, monkeypatch, snapshotRoot):
+    """File > Open snapshot... opens the dialog in the snapshot folder of the current
+    project (or the folder of all snapshots), and opens the snapshot chosen."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    try:
+        assert chooseSnapshot(MW, monkeypatch, "") == snapshots.projectFolder(path)
+        assert MW.currentProject == path
+        # The current project is closed first (the user can cancel)
+        monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.Cancel)
+        MW.projectDirty = True
+        monkeypatch.setattr(settings, "saveOnQuit", False)
+        chooseSnapshot(MW, monkeypatch, snapshot)
+        assert MW.currentProject == path
+        MW.projectDirty = False
+        chooseSnapshot(MW, monkeypatch, snapshot)
+        assert MW.currentProject == snapshot
+        assert MW.windowTitle().startswith(os.path.basename(snapshot)[:-4] + " (snapshot)")
+        # Not a recent project, nor the last one: it is removed once it is old
+        assert snapshot not in QSettings().value("recentFiles", [], type=list)
+        assert QSettings().value("lastProject") == ""
+        # From a snapshot: the folder of its snapshots
+        assert chooseSnapshot(MW, monkeypatch, "") == os.path.dirname(snapshot)
+        closePreviousProject(MW)
+        # Without a project: the folder of all snapshots
+        assert chooseSnapshot(MW, monkeypatch, snapshot) == snapshotRoot
+        assert MW.currentProject == snapshot
+        # A project without snapshots: the folder of all snapshots
+        closePreviousProject(MW)
+        new = str(tmp_path / "new.msk")
+        MW.welcome.createFile(new, overwrite=True)
+        assert chooseSnapshot(MW, monkeypatch, "") == snapshotRoot
+    finally:
+        closePreviousProject(MW)
+
+
+def test_open_snapshot_without_a_snapshot_folder(MWNoProject, monkeypatch, caplog):
+    """The snapshot folder cannot be created: the user is told, nothing else happens."""
+    def rootFolder():
+        raise PermissionError(13, "Permission denied", "/snapshots")
+
+    monkeypatch.setattr(snapshots, "rootFolder", rootFolder)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args[2]))
+    monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                        lambda *args: pytest.fail("no dialog expected"))
+    MWNoProject.actOpenSnapshot.trigger()
+    assert len(warnings) == 1 and "Permission denied" in warnings[0]
+    assert MWNoProject.currentProject is None
+
+
+def content(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def test_snapshot_is_not_saved(MW, tmp_path, monkeypatch):
+    """A snapshot is not saved (File > Save tells why, autosave in the status bar), nor is
+    anything saved into the snapshot folder. Closing it asks before losing changes."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    before = content(snapshot)
+    folder = os.path.dirname(snapshot)
+    closePreviousProject(MW)
+    MW.loadProject(snapshot)
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning",
+                        lambda *args: warnings.append(args[2]) or QMessageBox.Cancel)
+    try:
+        assert MW.currentProject == snapshot
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed in the snapshot")
+        assert MW.projectDirty
+
+        # File > Save
+        MW.actSave.trigger()
+        assert len(warnings) == 1
+        assert "keeps the snapshots" in warnings[0] and "Save as..." in warnings[0]
+        assert MW.projectDirty
+        # Autosave
+        warnings.clear()
+        assert not MW.saveDatas()
+        assert warnings == []
+        assert "not saved: it is in the snapshot folder" in MW.statusLabel.text()
+
+        # Quit, with "save on quit": asked (Cancel)
+        monkeypatch.setattr(settings, "saveOnQuit", True)
+        event = QCloseEvent()
+        MW.closeEvent(event)
+        assert not event.isAccepted()
+        assert len(warnings) == 1 and "could not be saved" in warnings[0]
+        # Close, without: "Save?" > Save, then asked (Cancel)
+        warnings.clear()
+        monkeypatch.setattr(settings, "saveOnQuit", False)
+        monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.Save)
+        MW.closeProject()
+        assert MW.currentProject == snapshot
+        assert len(warnings) == 1 and "could not be saved" in warnings[0]
+
+        assert content(snapshot) == before
+        assert os.listdir(folder) == [os.path.basename(snapshot)]
+
+        # Not into the snapshot folder either
+        closePreviousProject(MW)
+        MW.loadProject(path)
+        target = os.path.join(folder, "copy.msk")
+        warnings, shown = saveAs(MW, monkeypatch, target)
+        assert MW.currentProject == path
+        assert len(warnings) == 1 and "keeps the snapshots" in warnings[0]
+        assert shown == []
+        assert os.listdir(folder) == [os.path.basename(snapshot)]
+    finally:
+        closePreviousProject(MW)
+
+
+def test_snapshot_is_not_remembered(MW, tmp_path, monkeypatch):
+    """A snapshot opened with File > Open, or from the command line, is neither a recent
+    project nor the last project (opened at the next start): it is removed once it is old,
+    and it is not saved."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    try:
+        assert QSettings().value("lastProject") == path
+        recent = QSettings().value("recentFiles", [], type=list)
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args: (snapshot, ""))
+        closePreviousProject(MW)
+        QSettings().setValue("lastProject", path)
+        MW.welcome.openFile()
+        assert MW.currentProject == snapshot
+        assert QSettings().value("recentFiles", [], type=list) == recent
+        assert QSettings().value("lastProject") == path
+        # Quit: still the project
+        monkeypatch.setattr(settings, "saveOnQuit", True)
+        event = QCloseEvent()
+        MW.closeEvent(event)
+        assert event.isAccepted()
+        assert QSettings().value("lastProject") == path
+        # Command line
+        closePreviousProject(MW)
+        MW._autoLoadProject = snapshot
+        MW.welcome.showEvent(None)
+        assert MW.currentProject == snapshot
+        assert QSettings().value("recentFiles", [], type=list) == recent
+    finally:
+        MW._autoLoadProject = None
+        closePreviousProject(MW)
+
+
+def test_first_change_of_a_snapshot_is_noted(MW, tmp_path, monkeypatch):
+    """The first change of a snapshot shows a note (without waiting for an answer): it is not
+    saved, not even by autosave. Not for a project."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: QMessageBox.Cancel)
+    try:
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed in the project")
+        assert MW.projectDirty
+        assert not (MW._snapshotNote and MW._snapshotNote.isVisible())
+        assert MW.saveDatas()
+        closePreviousProject(MW)
+
+        MW.loadProject(snapshot)
+        assert MW.currentProject == snapshot
+        assert not (MW._snapshotNote and MW._snapshotNote.isVisible())
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed in the snapshot")
+        note = MW._snapshotNote
+        assert note.isVisible() and note.windowTitle() == "This is a snapshot"
+        assert "not saved, not even by autosave" in note.text() and "Save as..." in note.text()
+        note.close()
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed again")
+        assert not note.isVisible()
+        # Opened again: noted again; closing the project closes it. (Asked whether to lose
+        # the changes: Discard.)
+        monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.Discard)
+        monkeypatch.setattr(QMessageBox, "warning", lambda *args: QMessageBox.Discard)
+        MW.closeProject()
+        assert MW.currentProject is None
+        MW.loadProject(snapshot)
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed in the snapshot")
+        assert note.isVisible()
+        MW.closeProject()
+        assert MW.currentProject is None
+        assert not note.isVisible()
+    finally:
+        closePreviousProject(MW)
+
+
+def test_save_as_from_a_snapshot(MW, tmp_path, monkeypatch):
+    """"Save as..." restores a snapshot as a project folder (loading it has turned on saving
+    to a single file). It gives the project the snapshot was taken of."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    expected = serialized(MW, tmp_path, "expected.msk")
+    closePreviousProject(MW)
+    MW.loadProject(snapshot)
+    try:
+        assert MW.currentProject == snapshot
+        assert settings.saveToZip
+        target = str(tmp_path / "restored.msk")
+        assert saveAs(MW, monkeypatch, target) == ([], [])
+        assert MW.currentProject == target
+        assert not settings.saveToZip
+        assert MW.windowTitle().startswith("restored - ")
+        assert content(target) == b"1"
+        assert os.path.isfile(os.path.join(target[:-4], "MANUSKRIPT"))
+        assert not zipfile.is_zipfile(target)
+
+        closePreviousProject(MW)
+        MW.loadProject(target)
+        assert MW.currentProject == target
+        assert not settings.saveToZip
+        assert serialized(MW, tmp_path, "restored-zipped.msk") == expected
+        # It is a project, saved normally
+        MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Restored")
+        assert MW.saveDatas()
+        closePreviousProject(MW)
+        MW.loadProject(target)
+        assert MW.currentProject == target
+        assert sceneOf(MW).data(Outline.text) == "Restored"
+    finally:
+        closePreviousProject(MW)
+
+
+def test_restore_a_snapshot_over_its_project(MW, tmp_path, monkeypatch, clock):
+    """"Save as..." a snapshot onto the project it was taken of: what was on disk is kept in
+    a "disk" snapshot first, then the project is as it was when the snapshot was taken."""
+    path, snapshot = takeSnapshot(MW, tmp_path)
+    expected = serialized(MW, tmp_path, "expected.msk")
+    scene = os.path.join(path[:-4], sceneOf(MW)._lastPath)
+    MW.mdlOutline.setData(sceneOf(MW).index(Outline.text), "Changed after opening")
+    assert MW.saveDatas()
+    assert b"Changed after opening" in content(scene)
+    closePreviousProject(MW)
+
+    clock[0] += datetime.timedelta(minutes=1)
+    MW.loadProject(snapshot)
+    try:
+        assert MW.currentProject == snapshot
+        assert saveAs(MW, monkeypatch, path) == ([], [])
+        assert MW.currentProject == path
+        assert not zipfile.is_zipfile(path)
+        [name] = names(path, "disk")
+        disk = entries(os.path.join(snapshots.projectFolder(path), name))
+        assert b"Changed after opening" in disk[sceneOf(MW)._lastPath.replace(os.sep, "/")]
+        assert b"Changed after opening" not in content(scene)
+        # The snapshot is still there
+        assert os.path.isfile(snapshot)
+
+        closePreviousProject(MW)
+        MW.loadProject(path)
+        assert MW.currentProject == path
+        assert serialized(MW, tmp_path, "restored-zipped.msk") == expected
     finally:
         closePreviousProject(MW)
 

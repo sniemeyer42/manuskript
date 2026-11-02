@@ -150,6 +150,9 @@ class welcome(QWidget, Ui_welcome):
             self.btnRecent.setMenu(self.mw.menuRecents)
 
     def appendToRecentFiles(self, project):
+        # Not a snapshot: it is removed once it is old
+        if self.mw.isSnapshot(project):
+            return
         sttgns = QSettings()
         if sttgns.contains("recentFiles"):
             recentFiles = sttgns.value("recentFiles")
@@ -200,6 +203,10 @@ class welcome(QWidget, Ui_welcome):
             self.setLastAccessedDirectory(os.path.dirname(filename))
             if filename[-4:] != ".msk":
                 filename += ".msk"
+            # A snapshot is a single file, and loading it has turned on saving to a single
+            # file: it is restored as a project folder, as projects are usually saved.
+            if self.mw.isSnapshot():
+                settings.saveToZip = False
             if not settings.saveToZip and not self.checkProjectFolder(filename):
                 return
             if not self.checkWritable(filename):

@@ -10,13 +10,15 @@ from PyQt5.QtCore import (pyqtSignal, QSignalMapper, QTimer, QSettings, Qt, QPoi
                           QRegExp, QUrl, QSize, QModelIndex)
 from PyQt5.QtGui import QStandardItemModel, QIcon, QColor, QStandardItem
 from PyQt5.QtWidgets import QMainWindow, QHeaderView, qApp, QMenu, QActionGroup, QAction, QStyle, QListWidgetItem, \
-    QLabel, QDockWidget, QWidget, QMessageBox, QLineEdit, QTextEdit, QTreeView, QDialog, QTableView
+    QLabel, QDockWidget, QWidget, QMessageBox, QLineEdit, QTextEdit, QTreeView, QDialog, QTableView, \
+    QFileDialog
 
 from manuskript import settings
 from manuskript.enums import Character, PlotStep, Plot, World, Outline
 from manuskript.functions import wordCount, appPath, findWidgetsOfClass, openURL, showInFolder
 import manuskript.functions as F
 from manuskript import loadSave
+from manuskript import snapshots
 from manuskript.functions.history.History import History
 from manuskript.logging import getLogFilePath
 from manuskript.models.characterModel import characterModel
@@ -74,6 +76,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         self._defaultCursorFlashTime = 1000 # Overridden at startup with system
                                             # value. In manuskript.main.
         self._autoLoadProject = None  # Used to load a command line project
+        self._snapshotNote = None  # Tells that a snapshot is not saved (noteSnapshotChanged)
         self.sessionStartWordCount = 0  # Used to track session targets
         self.history = History()
         self._previousSelectionEmpty = True
@@ -114,7 +117,15 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         # Main Menu:: File
         self.actOpen.triggered.connect(self.welcome.openFile)
-        self.actSave.triggered.connect(self.saveDatas)
+        # File > Open snapshot... (also while a project is open)
+        self.actOpenSnapshot = QAction(QIcon.fromTheme("document-open"),
+                                       self.tr("Open s&napshot..."), self)
+        self.actOpenSnapshot.setStatusTip(self.tr(
+            "Opens a snapshot: a copy of a project that Manuskript has kept"))
+        self.actOpenSnapshot.triggered.connect(self.openSnapshot)
+        self.menuFile.insertAction(self.actSave, self.actOpenSnapshot)
+        # File > Save explains why a project is not saved
+        self.actSave.triggered.connect(lambda: self.saveDatas(explain=True))
         self.actSaveAs.triggered.connect(self.welcome.saveAsFile)
         self.actImport.triggered.connect(self.doImport)
         self.actCompile.triggered.connect(self.doCompile)
@@ -1013,13 +1024,22 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         # Make sure we can update the window title later.
         self.currentProject = project
         self.projectDirty = False
-        QSettings().setValue("lastProject", project)
+        # A snapshot is not opened at the next start: it is not saved, and it is removed once
+        # it is old
+        if not self.isSnapshot():
+            QSettings().setValue("lastProject", project)
 
         item = self.mdlOutline.rootItem
         wc = item.data(Outline.wordCount)
         self.sessionStartWordCount = int(wc) if wc != "" else 0
         # Add project name to Window's name
-        self.setWindowTitle(self.projectName() + " - " + self.tr("Manuskript"))
+        title = self.projectName()
+        if self.isSnapshot():
+            # It is not saved (see saveDatas())
+            title = self.tr("{} (snapshot)").format(title)
+            F.statusMessage(self.tr("This is a snapshot. Use \"Save as...\" to save it as a "
+                                    "project."), 10000, importance=2)
+        self.setWindowTitle(title + " - " + self.tr("Manuskript"))
 
         # Reset history
         self.history.reset()
@@ -1093,6 +1113,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                  return  # the project could not be saved, user cancelled action
         elif not self.handleUnsavedChanges():
              return  # user cancelled action
+
+        if self._snapshotNote:
+            self._snapshotNote.close()
 
         # Close open tabs in editor
         self.mainEditor.closeAllTabs()
@@ -1252,6 +1275,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         """
         Something changed in the project that requires auto-saving.
         """
+        # The first change of a snapshot: it is not saved, not even by autosave
+        if self.projectDirty is False and self.isSnapshot():
+            self.noteSnapshotChanged()
         self.projectDirty = True
 
         if settings.autoSaveNoChanges:
@@ -1287,17 +1313,84 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             if isinstance(w, textEditView):
                 w.submitPendingChanges()
 
-    def saveDatas(self, projectName=None):
+    def isSnapshot(self, project=None):
+        """True if project (default: the current project) is in the snapshot folder."""
+        project = project or self.currentProject
+        return bool(project) and snapshots.isSnapshot(project)
+
+    def openSnapshot(self):
+        """File > Open snapshot...: asks for a snapshot of the current project (or of any
+        project if none is open) and opens it like any project file. It is restored with
+        "Save as..."."""
+        try:
+            if self.isSnapshot():
+                folder = os.path.dirname(self.currentProject)
+            else:
+                folder = snapshots.rootFolder()
+                if self.currentProject and os.path.isdir(
+                        snapshots.projectFolder(self.currentProject)):
+                    folder = snapshots.projectFolder(self.currentProject)
+        except OSError as e:
+            LOGGER.error("Cannot open the snapshot folder: %s", e)
+            QMessageBox.warning(self, self.tr("Open snapshot"),
+                                self.tr("Cannot open the snapshot folder: {}").format(e))
+            return
+
+        filename = QFileDialog.getOpenFileName(self, self.tr("Open snapshot"), folder,
+                                               self.tr("Manuskript project (*.msk)"))[0]
+        if not filename:
+            return
+        if self.currentProject:
+            self.closeProject()
+            if self.currentProject:  # The user has cancelled
+                return
+        self.loadProject(filename)
+
+    def noteSnapshotChanged(self):
+        """Tells the user, without waiting for an answer (it is shown while typing), that the
+        changes to the current project, a snapshot, are not saved."""
+        if not self._snapshotNote:
+            self._snapshotNote = QMessageBox(
+                QMessageBox.Warning, self.tr("This is a snapshot"),
+                self.tr("This project is a snapshot, a copy that Manuskript has kept. Changes "
+                        "to it are not saved, not even by autosave. To keep them, use \"Save "
+                        "as...\" to save it as a project."), QMessageBox.Ok, self)
+        self._snapshotNote.open()
+
+    def refuseToSaveSnapshot(self, target, explain):
+        """Nothing is saved into the snapshot folder: a snapshot stays as it was taken, and a
+        project saved there could be removed with the old snapshots. Returns False."""
+        LOGGER.warning("Project %s not saved: it is in the snapshot folder.", target)
+        F.statusMessage(self.tr("WARNING: Project {} not saved: it is in the snapshot folder. "
+                                "Use \"Save as...\" to save it as a project.")
+                        .format(os.path.basename(target)), importance=3)
+        if explain:
+            QMessageBox.warning(self, self.tr("Project not saved"), self.tr(
+                "{} is in the folder where Manuskript keeps the snapshots of projects, so it "
+                "is not saved. To restore a snapshot, use \"Save as...\" to save it as a "
+                "project somewhere else.").format(target))
+        return False
+
+    def saveDatas(self, projectName=None, explain=False):
         """Saves the current project (in self.currentProject).
 
         If ``projectName`` is given, the project is saved there ("Save as..."), and
         currentProject becomes projectName if this succeeds. If it fails, the project
         stays where it was.
 
+        Nothing is saved into the snapshot folder. If ``explain`` (or ``projectName``) is
+        given, the user is told why in a dialog, otherwise (autosave, closing) in the status
+        bar.
+
         Returns True if the project has been saved.
         """
         # Before the save timer is stopped: submitting may restart it.
         self.submitPendingEdits()
+
+        target = projectName or self.currentProject
+        if target and self.isSnapshot(target):
+            self.saveTimerNoChanges.stop()
+            return self.refuseToSaveSnapshot(target, explain or bool(projectName))
 
         if projectName:
             previousProject = self.currentProject
