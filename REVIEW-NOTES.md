@@ -1,6 +1,15 @@
 # Manuskript: bug-fix branches, open problems and code-quality review
 
-*Discussion paper for the Manuskript maintainers, written November 2026. The fix branches (`fix/*` and `fix/all-quickfixes`) are in the fork [sniemeyer42/manuskript](https://github.com/sniemeyer42/manuskript). At the time of writing, `fix/review-findings` and the latest commits of `fix/spellcheck` and `fix/all-quickfixes` (D5, and the merges of both branches) had not been pushed there yet. All branches are based on `develop` at `01e0574` (2026-09-02), except `fix/review-findings`, which builds on `fix/all-quickfixes` (see section 1).*
+*Discussion paper for the Manuskript maintainers, written November 2026 (version 3). The fix branches (`fix/*` and `fix/all-quickfixes`) are in the fork [sniemeyer42/manuskript](https://github.com/sniemeyer42/manuskript). At the time of writing (according to the remote-tracking branches of a local clone, not checked on GitHub itself), six of the branches are there as described here. Three are not, or not completely: `fix/review-findings` is not on the fork at all, `fix/spellcheck` there lacks its last commit (D5, `92bee56`), and `fix/all-quickfixes` there is at `26f618e` (version 1 of this document), without the 10 commits that followed (the `fix/review-findings` and D5 work, their merges, and version 2 of this document, `1d7320f`). All branches are based on `develop` at `01e0574` (2026-09-02), except `fix/review-findings`, which builds on `fix/all-quickfixes` (see section 1).*
+
+**What changed in version 3.** The code of the fix branches has not changed since version 2, so the test counts stay. New in this version:
+
+- **A9**, a data loss that is still open on `fix/all-quickfixes` and also on `develop`: two sibling items whose titles give the same file name are reordered, one write of the next save fails, and the user discards (or the app ends) before a later save succeeds. One scene is then gone. Fix: S.
+- **A10, F5, G5, G6**: bugs in upstream code that were fixed on the fork owner's personal branch (`personal/main`, not on GitHub at the time of writing). They are listed here as open, with the commit that fixes them there.
+- **B10**, and additions to **B3** and **B7**: problems in the current code that the panel behind the save design (3.4 item 15) noted, checked here on `1d7320f`: two characters with the same ID (deleting one can delete the other), a non-numeric character ID (the project does not open, or the app exits), and a scene added outside Manuskript in a chapter that is then deleted (it no longer loads). No fix exists yet.
+- **B2**: a first manual test with the Breeze style (no crash). Adwaita-qt is still open.
+- **Windows**: the suite ran under Wine with a Windows CPython (G5). No failure pointed to product code. One test fixture (used by 39 tests) and two test assertions fail there, and a second fixture has the same pattern.
+- Pointers to a concrete design for a store-based folder save, as reference material (3.4 item 15, Q4, Q17).
 
 ## TL;DR
 
@@ -9,9 +18,10 @@
 - The data-loss bugs found while writing the first version of this document (A1–A5), the scroll-bar segfault (B2) and a spell-check regression on one of the branches (D5) are fixed too, on `fix/review-findings` and `fix/spellcheck`.
 - Some problems are still open. Section 2 lists each with an effort estimate. The most important:
   - the fail-fast excepthook (B1),
+  - a scene that is lost when two sibling titles give the same file name and a save fails after a reorder (A9, new in version 3, also on `develop`; fix S),
   - damaged project files that keep a whole project from opening (B3),
   - two crashes found during the last fix round (A6, A8),
-  - a manual check of the scroll-bar fix with the Breeze and Adwaita-qt styles (B2).
+  - a manual check of the scroll-bar fix with Adwaita-qt (B2; a first manual test with Breeze showed no crash).
 - **All code and text were written by an AI model** (Claude), directed by the fork owner but not reviewed line by line by a human. See below.
 - Section 3 is a code-quality assessment with incremental proposals. Section 4 collects the questions maintainers need to decide.
 
@@ -32,7 +42,13 @@ How the work was done:
    - The A4 fix first did not restore everything after a failed "Save as…". After the first rework it wrote no copy when the target was a link to the project file.
 
    The last rework of these two fixes was checked with the reviewers' scripts and the full test suite, but not reviewed a third time. Problems found along the way that the fixes did not cause are listed as new open items (A6–A8, D6).
-6. **Not done yet.** No manual testing on Windows or macOS, no test under a real X server (only `offscreen`), and no review by a human: neither by a Manuskript developer nor by the fork owner. Please treat the branches as well-tested proposals, not as finished work.
+6. **After version 2.** The fork owner then had a personal version made on top of `fix/all-quickfixes` (branch `personal/main`: one user, Linux and Windows, folder-mode projects kept in git). That work, again done by Claude, produced the version 3 additions:
+   - A9 was found by one of the three designs of a design panel for a new folder-mode save, and two of the panel's judges reproduced it on a copy of `1d7320f`. For this document it was reproduced again with small tests on fresh copies of `1d7320f` and of `develop`.
+   - B10 and the additions to B3 and B7 start from notes in the reports of the same panel's judges. They were checked here with small tests on a fresh copy of `1d7320f`.
+   - A10, F5, G5 and G6 were fixed on `personal/main` (the matrix-key part of G6 was already noted in 3.3.3). Each was checked here against the code of `fix/all-quickfixes` and `develop`. The A10 and G5 fixes were also applied to a copy of `1d7320f` and run there.
+   - The suite was run under Wine with a Windows CPython (G5).
+   - The fork owner tested the B2 fix by hand with Breeze.
+7. **Not done yet.** No testing on a real Windows (only under Wine) or on macOS, no automated test under a real X server (only `offscreen`), one manual test (the fork owner's B2 check with Breeze), and no review by a human: neither by a Manuskript developer nor by the fork owner. Please treat the branches as well-tested proposals, not as finished work.
 
 ## Contents
 
@@ -68,18 +84,18 @@ The integrated branch `fix/all-quickfixes` changes 101 files (+10256 / −730 li
 - Four test files that both sides had added to.
 - `spellchecker.py`: one import line (`unicodedata` for D5, `zlib` for A5).
 
-Tests ran with `QT_QPA_PLATFORM=offscreen` on two setups:
+Tests ran with `QT_QPA_PLATFORM=offscreen` on two Linux setups:
 
 - Python 3.13 with system PyQt5 5.15.10 / Qt 5.15.19,
 - Python 3.11 with the pinned `requirements.txt` wheels (PyQt5 5.15.11).
 
-They have not run on this repository's CI yet (Python 3.9, see G2). All code parses with the Python 3.6 grammar (checked with `ast`), but it has only been run on 3.11 and 3.13.
+For version 3, the suite also ran under Wine with the Windows CPython 3.12.10 and PyQt5 5.15.11 / Qt 5.15.2. That is not a real Windows. There, 39 tests stop with a setup error in a fixture and 2 fail on POSIX file modes, all in test code, and 2 more fail because of the embeddable Python itself (G5). The branches have not run on this repository's CI yet (Python 3.9, see G2). All code parses with the Python 3.6 grammar (checked with `ast`), but it has only been run on 3.11 and 3.13 (Linux) and 3.12 (Wine).
 
 ### 1.2 What each branch fixes
 
 **`fix/save-load-data-loss`** is the most important branch. In folder mode (the default), several common actions lost data, either silently or by making every save crash:
 
-- Reordering or moving items whose titles slugify to the same name (umlauts, CJK, Cyrillic): one item's file silently overwrote another's (#1320).
+- Reordering or moving items whose titles slugify to the same name (umlauts, CJK, Cyrillic): one item's file silently overwrote another's (#1320). One case is still open: the same reorder plus a failed write (A9).
 - Moving scenes into a folder that was not on disk yet (#1306, #719).
 - Moving "Chapter 10" above "Chapter 1" (one cache key is a prefix of the other) or duplicating a saved folder: every save then crashed (#1216, #761).
 
@@ -164,7 +180,7 @@ Thread exceptions and Qt messages are now logged at the right level. SIGTERM/SIG
 
 - Outline tab with several items selected: clicking into the "Various" summary field and out again, or toggling spellcheck, erased the summaries of all selected items (A1).
 - Split at cursor (Ctrl+K) right after typing lost the text typed last and cut at the wrong place (A2).
-- The main editor no longer lets its text area show the scroll bar that was moved out of it. Some styles are reported to crash on that (B2). Still needs a manual check with Breeze5 and Adwaita-qt.
+- The main editor no longer lets its text area show the scroll bar that was moved out of it. Some styles are reported to crash on that (B2). In a first manual test with Breeze, the fork owner saw no crash. Adwaita-qt still needs a check.
 - Adding or removing characters, plots, world items, labels or statuses marks the project as modified, so File > Close saves the change or asks first. Before, it was dropped (A3).
 - A failed "Save as…" leaves the project where it was and tells the user why. "Save as…" into the project's own folder no longer deletes files that could not be read when loading (A4).
 - Loading a dictionary no longer rewrites the custom-word file, and a damaged file is kept as `.damaged` instead of being emptied (A5).
@@ -312,7 +328,7 @@ These are intentional, but they change what users see or how files are written. 
 | BC2 | save-load | Saving writes `.<name>.tmp` next to each file and then `os.replace()`s it. It **needs write permission on the folder**, and **hard links are replaced** (symlinks are written through, file mode is kept). A crash can leave a hidden `.tmp` file. Folder mode does not `fsync` (the `.msk` mode does). | A failed write (disk full, USB stick removed) left truncated files (#811, #1128). |
 | BC3 | save-load | A project **no longer opens** if its folder is missing, if its `outline/` or `characters/` folder cannot be read, or if a root file (`MANUSKRIPT`, `settings.txt`, `plots.xml`, …) cannot be read or is not valid UTF-8. Before, it opened empty, opened without that data, or crashed. A `settings.txt` with invalid JSON still opens, with default settings. | When it opened empty, the next save (or save on quit) overwrote the real data. |
 | BC4 | save-load | Saving **into an existing, non-empty folder that is not a Manuskript project is refused** with a dialog. For an older project, only what Manuskript writes is cleaned up. | Before, "Save as" `Documents.msk` in `$HOME` deleted `~/Documents` recursively. |
-| BC5 | save-load | File names are capped at 64 slug characters. Items with longer titles are **renamed once** on their next save. | Long titles raised "File name too long" and aborted the save (#313). |
+| BC5 | save-load | File names are capped at 64 slug characters. Items with longer titles are **renamed once** on their next save. Sibling titles that differ only after the cut then share a file name (A9). | Long titles raised "File name too long" and aborted the save (#313). |
 | BC6 | save-load | Files in the project folder that were not loaded are **kept, not deleted**. They are still not shown in the UI. | Before, the first save deleted them. |
 | BC7 | save-load | Clicking a demo project opens a **copy in the user data folder**. | Edits were written into the installed sample, or lost on a read-only install. |
 | BC8 | save-load | If saving fails when the user closes or quits, Manuskript **asks before discarding** unsaved changes. | Before, the window just closed and the changes were lost. |
@@ -336,11 +352,11 @@ The new user-visible strings use `tr()`/`safeTranslate()` (23 strings), but **no
 
 1. **One PR per branch**, in this order: `save-load-data-loss` → `crashes` → `outline-dnd` → `editor-performance` → `import-export` → `spellcheck` → `ui-settings-search` → `review-findings`. That is the order of `fix/all-quickfixes` (where `fix/spellcheck` is merged a second time for D5), so the conflict resolutions shown there can be reused. `review-findings` needs all the others first.
 2. Each commit fixes one problem, with three exceptions: `638be4a` also carries a small focus-mode fix that the bug it fixes had been hiding; `9b9e2fa` (A4) also fixes two related "Save as…" cases; `2f348bd` (A3) also disconnects the old `dataChanged` connections on close. Each message explains the bug, the root cause and the fix, and names the upstream issues where there are any. Reviewers can review commit by commit, or cherry-pick single commits.
-3. Before opening the PRs, run the repository's own CI on the branches (see G2). Before releasing, test by hand with a copy of a real project, on Windows and macOS in particular: case-insensitive file systems, path length, `os.replace` over open files on Windows. These were only covered by tests on Linux.
+3. Before opening the PRs, run the repository's own CI on the branches (see G2). Before releasing, test by hand with a copy of a real project, on Windows and macOS in particular: case-insensitive file systems, path length, `os.replace` over open files on Windows. These were only covered by tests on Linux, and by one run of the suite under Wine (G5), which does not show how a real Windows, its antivirus or a sync client behave.
 
 ## 2. Open problems and effort
 
-Items marked ✅ were fixed after the first version of this document: D5 on `fix/spellcheck`, the others on `fix/review-findings`. They stay in the lists so that their IDs remain stable. Everything else is **still present on `fix/all-quickfixes`**. Each item was checked against the code, most of them with a small isolated script. File and line references are to `fix/all-quickfixes` at `eacaf8f`, before these fixes.
+Items marked ✅ were fixed after the first version of this document: D5 on `fix/spellcheck`, the others on `fix/review-findings`. They stay in the lists so that their IDs remain stable. Everything else is **still present on `fix/all-quickfixes`**. Each item was checked against the code, most of them with a small isolated script. File and line references are to `fix/all-quickfixes` at `eacaf8f`, before these fixes. The items and additions made in version 3 (A9, A10, B10, F5, G5, G6, and parts of B2, B3, B7 and G1) refer to the current tip `1d7320f`, and to `develop` where it says so. For A10, F5, G5 and G6, a fix exists on the fork owner's personal branch `personal/main`, which was not on GitHub at the time of writing. They are still open on the fix branches.
 
 **Effort** assumes one developer who knows Python/Qt but is new to this code base, and includes tests: **S** ≤ ½ day, **M** 1–3 days, **L** 1–2 weeks, **XL** > 2 weeks or architectural. **Decision** (✋) means maintainers should agree on the behaviour before someone writes the fix (see section 4).
 
@@ -348,7 +364,7 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 
 | ID | Problem | Impact | Effort | Prio | ✋ |
 |---|---|---|:-:|:-:|:-:|
-| **A — Newly found during this review (all also present on `develop`)** ||||||
+| **A — Newly found during this review and after it (all also present on `develop`)** ||||||
 | A1 | ✅ `2a53412` Outline tab, multi-selection: the "Various" summary field writes `""` into every selected item | Silent data loss | — | — | ✋ |
 | A2 | ✅ `1765c09` Split at cursor (Ctrl+K) right after typing loses the last typed text and cuts at the wrong place | Data loss | — | — | |
 | A3 | ✅ `2f348bd` Adding or removing characters, plots, world items, labels or statuses does not mark the project as modified. An added entry that is then edited does, so what gets lost is removals and unedited additions. | File > Close drops them, no prompt | — | — | ✋ |
@@ -357,16 +373,19 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 | A6 | Outline tab: if the first selection is already a multi-selection (e.g. Ctrl+A), the first key typed into the full summary raises `AttributeError` and the app exits | Crash, unsaved work lost | S | high | |
 | A7 | Browsing plot steps, or switching tabs in a new project made from a template, marks the project modified without an edit | Needless "Save?" prompt and autosave | S | low | |
 | A8 | Segfault when a project is closed and another one is opened in the same event-loop pass, after an editor tab showed a folder in "outline" view | Crash; not known whether the app reaches it | S–M | medium | |
+| A9 | Two sibling titles give the same file name (`Grüße`/`Größe`, titles that differ only after the 64-character cut, case variants on Windows/macOS). After a reorder, one write of the save fails, then the user discards or the app ends before a later save succeeds: one scene's text is gone. New in version 3. | Silent data loss | S | high | ✋ |
+| A10 | A single-file project (`.msk` zip) with one entry that is not UTF-8 does not open (on `develop`: the app exits), and hidden entries are loaded. Fixed on `personal/main` by `2d7a5de`. | "Can't open my project" | S | medium | |
 | **B — Robustness and data safety (known)** ||||||
 | B1 | Global excepthook calls `sys.exit(1)` on any uncaught exception | Every small bug = crash + lost work | M | **highest** | ✋ |
-| B2 | ✅ `07dce72` Main editor reparents its scroll bar without `ScrollBarAlwaysOff` (#450 #601 #1435). Still needs a manual check with these styles. | Segfault with Breeze5/Adwaita | S (manual check) | high | |
-| B3 | One damaged `plots.xml`/`world.opml`/`revisions.xml`, a `folder.txt` without ID or a non-numeric ID keeps the whole project from opening | "Can't open my project" | M | high | ✋ |
+| B2 | ✅ `07dce72` Main editor reparents its scroll bar without `ScrollBarAlwaysOff` (#450 #601 #1435). Breeze: no crash in one manual test by the fork owner. Adwaita-qt still needs a manual check. | Segfault with Breeze5/Adwaita | S (manual check) | high | |
+| B3 | One damaged `plots.xml`/`world.opml`/`revisions.xml`, a `folder.txt` without ID or a non-numeric ID keeps the whole project from opening (a non-numeric character ID can also close the app) | "Can't open my project" | M | high | ✋ |
 | B4 | Multi-line metadata is not round-trip safe: indentation is lost, and trimming trailing whitespace moves notes into the scene text | Silent corruption | M | medium | |
 | B5 | Deleting a label/status relabels every item that uses a later one (#1010, only the crash is fixed) | Wrong data, persistent | S | medium | ✋ |
 | B6 | Character, plot and world IDs reuse the lowest free number | References attach to new entities | M | medium | ✋ |
-| B7 | Files Manuskript did not load (notes, hand-made scenes) stay behind when their folder is renamed | Orphaned, invisible files | M | medium | ✋ |
+| B7 | Files Manuskript did not load (notes, hand-made scenes) stay behind when their folder is renamed. A scene added while the project is open (`git pull`) stays behind when its chapter is deleted, and no longer loads. | Orphaned, invisible files | M | medium | ✋ |
 | B8 | A signal handler can re-enter a running save, and the "Save?" dialog can block a logout | Rare, nasty | S | low | ✋ |
 | B9 | Atomic writes: no `fsync` in folder mode, stale `.tmp` files are not cleaned up | Edge cases | S | low | ✋ |
+| B10 | Two characters with the same ID (after a git merge of two copies that each added one, or from a character file without `ID:`) are kept as they are. Every lookup by ID finds the first one, so deleting the second deletes the first. New in version 3. | Wrong character deleted (data loss) | S | medium | ✋ |
 | **C — Editor** ||||||
 | C1 | Qt UTF-16 positions mixed with Python indices | Wrong underline, correction, search hit or split after emoji | M | medium | |
 | C2 | Undo gets stuck after a paragraph-format change (highlighter calls `setBlockFormat`) | Ctrl+Z does nothing | M | medium | |
@@ -394,13 +413,16 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 | F2 | No "Clear list" for recent projects (rest of #1228; duplicates are fixed by `7f6d81a`) | UX | S | low | ✋ |
 | F3 | Qt command-line options rejected, no `--no-autoload`, no macOS "open with" | Packagers, power users | S–M | low | |
 | F4 | Small hardening: World remove loop, `with_tail`, drag-move decodes the whole payload | Latent | S | low | |
+| F5 | Help > Locate log file: the fallback of `showInFolder()` opens `QUrl(path)`, which is not a file URL (on Windows the drive letter becomes the scheme). Fixed on `personal/main` inside `de38879`. | The log folder may not open | S | low | |
 | **G — Tests, CI, i18n** ||||||
 | G1 | Test fixtures leak about 220 temp entries (about 51 MB) per run and write to `~/.config/manuskript_tests` and `~/.local/share/manuskript_tests` | Developers, CI containers | S | medium | |
 | G2 | The fix branches have not run on this repository's CI yet (Python 3.9, xvfb, extra spellcheck libraries) | Review risk | S | medium | |
 | G3 | 23 new `tr()`/`safeTranslate()` strings are not in any `.ts`; `'Open {}'` can never be translated | Non-English users | S | low | ✋ |
 | G4 | Rare segfault at interpreter exit (focusOut → submit during teardown, also on develop) | Flaky CI | S | low | |
+| G5 | On Windows (run under Wine), 39 tests stop with a setup error in the `MWSampleProject` fixture (a `NamedTemporaryFile` that is still open), and 2 tests assert POSIX file modes. No failure points to product code. Fixed on `personal/main` by `a709177` and `71a1ad5`. | No Windows CI possible | S | medium | |
+| G6 | CI: job names use `matrix.python_version` (the key is `python-version`), and `requirements.txt` pins `PyQt5-Qt5==5.15.17`, which has no Windows wheel. Fixed for the fork's own matrix on `personal/main` by `71a1ad5`. | Blank job names; `pip install -r requirements.txt` cannot work on Windows | S | medium | |
 
-**A second bugfix round of about one week** would cover A6–A8, B5, C4, D6, E1–E3, E6, E7 and G1–G3. All of them are S items, except A8 (S–M). Five of them (B5, C4, E1, E2, G3) need a decision first, and that time is not included. The larger items that remain after that are:
+**A second bugfix round of about one week** would cover A6–A8, B5, C4, D6, E1–E3, E6, E7 and G1–G3. All of them are S items, except A8 (S–M). Five of them (B5, C4, E1, E2, G3) need a decision first, and that time is not included. A9, A10, B10, F5, G5 and G6 (all S) would add two to three days. For all of them except B10, a fix exists, on `personal/main` or as a prototype (see the details). A9 needs a decision on a one-time rename of the affected files, B10 on which character keeps the ID. The larger items that remain after that are:
 
 - B1, which waits for the policy decision (Q4),
 - B3, B4, B6 and B7,
@@ -458,6 +480,38 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 - **Where:** Closing a project closes the editor tabs, but the closed `editorWidget`s are only `deleteLater`'d. If another project is created or loaded before control returns to the event loop, `loadProject` calls `tabSplitter.updateStyleSheet()` (`mainWindow.py:974`, `tabSplitter.py:101`), which reaches a stale tree view and segfaults in `QTreeViewPrivate::itemHeight`. Reproduced with a script on `eacaf8f` and on `develop`: show a folder in an editor's "outline" folder view, then close the project and create one without returning to the event loop. If the closed project's models are garbage-collected in between, it crashes on the first switch, otherwise after a few. In the app, File > Open and the recent-files menu are disabled while a project is open, so a switch normally goes through File > Close in a separate slot first. Whether any path reaches the crash was not checked. The B2 tests avoid it with `closeAllTabs()` and `sendPostedEvents(DeferredDelete)`.
 - **Fix:** Delete or detach the closed editors' views synchronously in `closeProject`, or skip editors that are pending deletion in `updateStyleSheet`. Effort: S–M.
 
+#### A9 — Two siblings with the same file name, a failed write, and a scene is gone (data loss)
+- **Where:** `outlineItemPath` (`version_1.py:829-837`) adds the item's ID to the file name only when two sibling titles are *identical*. Siblings whose titles only give the same stem, `slugify(title)[:64]`, get the same name apart from the row prefix:
+  - titles that differ only in non-ASCII letters: `Grüße` and `Größe` both give `Gr--e`, and CJK titles of the same length all give dashes;
+  - titles that differ only after the 64-character cut of `ae70ff7` (BC5), and identical titles that long, where the cut also removes the ID;
+  - on case-insensitive file systems (Windows, macOS), titles that differ only in case (`Intro`, `intro`).
+
+  After a reorder, one item's new path is then the other item's old path. The save writes in tree order (`:505-534`), so the first write replaces the other item's only file. If the other item's own write then fails, the rule that keeps the old file of a moved item whose new file was not written (`:546-568`) keeps a path that now holds the first item's text. This is the part of #1320 that `16666ba` does not cover.
+- **Scenario:** A chapter holds `Grüße` (`0-Gr--e.md`) and `Größe` (`1-Gr--e.md`), both saved. Drag `Größe` above `Grüße`. The next save writes `Größe` into `0-Gr--e.md`. The write of `Grüße` to `1-Gr--e.md` fails: disk full, a read-only file, or on Windows a file held by an indexer, an antivirus or a sync client. The "Files not saved" dialog appears. The user closes the project and picks Discard in "Project not saved" (BC8), whose text says only that "the changes since the last successful save will be lost". On disk, both files now hold `Größe`. The text of `Grüße`, saved long before, is gone.
+  - A chain loses data too: move `Später` to the top of `Grüße`, `Größe`, `Später`, and let the write of `2-Gr--e.md` fail. `Größe` is gone.
+  - A crash or a kill between the two writes, or after the failed save, should end the same way (code reading, not run).
+  - A later save that succeeds writes both texts again (checked).
+- **Evidence:** Found by one of the three designs of the panel that wrote the save design in 3.4 item 15 (the one called "planexec" in `docs/save-design/README.md`). Two of the panel's judges (safety and effort) then reproduced it on a `1d7320f` tree. Reproduced again for this document on a fresh copy of `1d7320f` with three tests: the swap, the chain, and two titles of about 70 characters that differ only in their last word. Each one ends with one text twice and the other one gone. Without the failed write, the swap is saved correctly. The case variant was not run, because the Linux file systems used are case-sensitive.
+- **Status on `develop`:** Present, and worse. Reproduced with the swap on a fresh copy of `develop`, with a `PermissionError` on the second write: after reopening, `Größe` is there twice. On `develop`, even a later save that succeeds does not bring `Grüße` back. Its in-place moves (`version_1.py:351-372` on `develop`) overwrite the file first, and the write loop records the failed file as written in the cache (`:398`), so it is not written again. `develop` has no 64-character cap, so the long-title variant is new on the fix branches.
+- **Fix:** Step 3 of the plan in the save design (see 3.4 item 15): when the stems of siblings collide, ignoring case, each of them gets its ID: `slugify(title)[:64 - len(ID) - 1] + "-" + ID`. For identical short titles, that is the name used today. The affected items are renamed once, on their next save, through the normal rewrite of renamed items (`16666ba`). This works with the current save code.
+  - Checked with a six-line prototype of this rule in `outlineItemPath` on a copy of `1d7320f`: the three tests keep both texts, and the rest of the suite gives the same result as before (622 passed, 8 skipped). The prototype was not reviewed. Tests for case variants and for the one-time rename are still missing.
+  - What stays open with the current save code: an item moved into another folder can still land on the old path of an item that left that folder in the same save (same row, same stem). The design orders such writes (W2), as part of the larger rewrite.
+- **Effort:** S. **Decision:** is a one-time rename of the affected files acceptable (Q21)? The alternative, an ID in every outline file name, rules out every collision, but renames every file once.
+
+#### A10 — A single-file project with an entry that is not UTF-8, or a hidden entry
+- **Where:** The zip branch of `loadProject` (`version_1.py:882-888`; `:658-664` on `develop`) decodes every entry except `.xml` and `.opml` as UTF-8. `loadFilesFromZip` (`version_0.py:182-191`) keeps hidden entries. The folder branch skips hidden files and reports files that are not UTF-8 (`6787396`). The zip branch does neither:
+  - One entry that is not UTF-8 raises `UnicodeDecodeError`: a scene saved as Latin-1, an image, or the `__MACOSX/._*` entries that macOS's archive tool adds. On `fix/all-quickfixes` the project then does not open. The status bar says "Loading project … failed." and does not name the file. On `develop` the exception is not caught, so the excepthook (B1) closes the app (code reading).
+  - Hidden entries are loaded: `characters/.DS_Store` becomes a character.
+
+  Manuskript itself writes only UTF-8 text into a `.msk` file. So this needs a project file that another tool made or changed, for example a project folder zipped by hand.
+- **Status:** Checked: the two tests of the fix below fail on a copy of `1d7320f`, with `UnicodeDecodeError` in the log.
+- **Fix:** On `personal/main`, `2d7a5de` "fix(load): skip hidden and undecodable entries of a single-file project" applies the folder branch's rules to the zip branch:
+  - entries with a hidden path component are skipped;
+  - an entry that is not UTF-8 is not loaded and is listed in the "Files not loaded" dialog, which says that it is not kept when the project is saved (a single-file save writes only what was loaded);
+  - if it is one of the root project files, the project does not open.
+
+  `version_1.py` is the same on `1d7320f` and on the parent of `2d7a5de`, so its change applies unchanged. With its two tests, the suite gives 624 passed, 8 skipped there. It adds one string (G3). Effort: S.
+
 #### B1 — The excepthook policy (the single biggest lever)
 - **Where:** `logging.py:155-167` logs and then calls `sys.exit(1)`, on purpose ("fail fast"). Checked with an offscreen probe:
   - With this hook, the first exception in a slot ends the process: no `closeEvent`, no save.
@@ -476,13 +530,19 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 - **Evidence:** The crash primitive (`mapFrom` after reparenting) was reproduced: SIGSEGV with the same frame chain as the gdb trace in #450. It was **not** reproduced end to end, because Breeze5 and Adwaita-qt were not available.
 - **Fix:** One line, `setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)`, plus a manual check on Plasma 5 or GNOME. Effort: S.
 - **✅ Fixed** in `07dce72`. A test checks that no scroll area in the main window shows a scroll bar outside itself, and that the moved bar still follows the text. The installed Breeze (6.8.1, Qt 5 plugin) did not take the crashing path in an offscreen session, even without the fix, and Adwaita-qt was not available, so the end-to-end crash is still not reproduced. **A manual check on Plasma 5 and on GNOME with Adwaita-qt is needed before the issues are closed.** Side effect: BC20.
+- **Manual test (version 3):** The fork owner used `fix/all-quickfixes` by hand with the Breeze style and saw no crash ("B2 seems to work"). The Breeze version and the desktop were not recorded. `develop` was not tried in the same setup, so the test does not show that this setup crashed before the fix. Still open: Adwaita-qt on GNOME, and a before/after comparison with Breeze on Plasma 5.
 
 #### B3 — One damaged file blocks the whole project
 - **Where:** `ET.fromstring` without a recovering parser at `version_1.py:1041` (plots), `:1077` (world) and `:1164` (revisions). `outlineFromMMD` raises `KeyError` for a `folder.txt` without `ID:` (`:1231`/`:1263`), and `abstractModel.py:72` raises `ValueError` for `ID: 12a`. The only message is 5 seconds of status-bar text.
+- **Character IDs (version 3):** a character file with a non-numeric `ID:` is worse. Checked on a copy of `1d7320f` with `ID: ../../x`:
+  - If another character is loaded after it, `int(c.ID())` in `assignUniqueID` (`characterModel.py:342-352`) raises, and the project does not open ("Loading project … failed.").
+  - If it is the last one, the project loads, but `int()` in `plotModel.updatePlotPersoButton` (`plotModel.py:260`) raises in `makeConnections`. That is outside the `try` of `25bfa0b`, so in the app the excepthook (B1) closes it. With "Load last project on startup", that should happen on every start (code reading).
+  - The same `int()` calls are on `develop`, where the first case is not caught either (code reading).
+  - The ID also goes unchecked into the character's file name (`version_1.py:315-318`, `:239` on `develop`). The save-design panel noted that `../../x` would build a path outside the project. In the checks here, the project never got far enough to be saved.
 - **Fix:**
   - A `parseXMLSection` helper that, on a parse error, retries with `XMLParser(recover=True, huge_tree=True)`, keeps a `.damaged-<time>` copy and lists the file in the existing "Files not loaded" dialog.
   - A broken `revisions.xml` only drops revisions.
-  - A `folder.txt` without ID gets a new ID, like other items.
+  - A `folder.txt` without ID gets a new ID, like other items. A character with a non-numeric ID gets a new one too (together with B10).
   - Show a real dialog instead of the status bar.
   - Optional: a "newer format" guard (`MANUSKRIPT` > 1 is loaded and saved back as 1 today).
 - **Effort:** M. **Decision:** salvage plus backup, or keep refusing to open but name the broken file?
@@ -501,8 +561,9 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 
 #### B7 — Files Manuskript did not load
 - **Where:** Since the save-load fix, files that were readable but not loaded are left alone (good). When their folder is renamed they are **not** moved along, unlike unreadable files (`version_1.py:540-560`). Example: `ideas.txt` or a hand-made scene without `ID:` stays in the old, now unloaded folder. They are also not listed in any dialog.
+- **Added while open (version 3):** a scene added to the project folder while the project is open, for example by `git pull`, is not known to the save either. If the user then deletes its chapter, the save removes the chapter's `folder.txt` and leaves the scene. On the next load the scene no longer shows up: its text is still on disk, but nothing shows it. Found by the safety judge of the save-design panel, checked here on a copy of `1d7320f` with a scene that has an `ID:`. Not checked on `develop`.
 - **Fix:**
-  - Short term: move them like unreadable files and list them in "Files not loaded" (M).
+  - Short term: move them like unreadable files and list them in "Files not loaded" (M). Keep a folder's `folder.txt` while the folder still holds a file the loader would load, as the save design does (3.4 item 15).
   - Long term: real directory renames with a two-phase temporary name, which would also end the subtree rewrite (BC1 in 1.4). Effort L. This is exactly the path that caused the original data loss, so it needs the fuzzer.
 - **Decision:** adopt, report or ignore foreign files?
 
@@ -516,6 +577,15 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
   - A crash between write and replace leaves `.<name>.tmp` until that file is written again.
   - `exporter.ini` has its own non-hardened tmp+replace.
   - Fix: clean stale `.tmp` files on load, reuse `writeFile`, and optionally `fsync` on explicit save or quit (S). **Decision:** is the `fsync` cost acceptable?
+
+#### B10 — Two characters with the same ID
+- **Where:** Nothing makes character IDs unique on load. Two ways to get duplicates:
+  - Two copies of a project (two machines, or two git branches) each add a character. Both get the lowest free number (B6), for example `6-Anna.txt` and `6-Bert.txt`, and a git merge keeps both files.
+  - A character file without `ID:` gets the lowest number that is free *at that point of the load*. If a file with that ID is loaded after it, both keep it.
+
+  Every lookup by ID (`characterModel.getCharacterByID`, `characterModel.py:159-166`) returns the first match. The Characters tab passes the selected character's ID (`characterTreeView.py:141-162`, `:214-220`). So deleting the second character deletes the first, and the next save removes the first one's file. Changing the colour or the POV check box of the second changes the first in the same way (`characterTreeView.py:165-185`, code reading). POVs, plot members and `{C:id}` references cannot tell the two apart.
+- **Evidence:** Checked on a copy of `1d7320f` with `1-Paul.txt`, a copy of it named `1-Saul.txt`, and a file `0-Abe.txt` without `ID:`. Both pairs load with the same ID (`0` twice, `1` twice). `removeCharacter` with Saul's ID removes Paul, and after the next save `1-Paul.txt` is gone and `1-Saul.txt` is left. `characterModel.py` is the same on `develop` (not run there). The safety judge of the save-design panel named duplicate IDs as a risk for the save; the delete case was found here.
+- **Fix:** On load, give every duplicate after the first a new ID (`max+1`, see B6) and list the renumbered characters once. References stay with the first one, because they cannot be told apart. Add a test for both ways. The save design renumbers duplicates at load (its rule L6). Effort: S. **Decision:** which character keeps the ID, and is a notice enough?
 
 #### C1 — UTF-16 vs Python indices
 - **Where:** `QTextCursor`/`QSyntaxHighlighter` count UTF-16 units, Python counts code points. After `😀😀 `:
@@ -587,17 +657,32 @@ Items marked ✅ were fixed after the first version of this document: D5 on `fix
 - **F2:** Add a "Clear list" entry to the recent-projects menu. S, new strings. **Decision.**
 - **F3:** `argparse` rejects Qt options (`-platform wayland`). Use `parse_known_args`. Add `--no-autoload`: today, a project that crashes the app after loading can only be escaped by passing another project on the command line or by editing QSettings. Handle `QEvent.FileOpen` on macOS (needs a Mac).
 - **F4:** `worldModel.py:165-168` loops forever if `removeRows` fails. `ET.tostring(child)` keeps the tail text (`abstractModel.py:385`). `canDropMimeData` decodes the full payload on every drag move (12.8 ms for the sample manuscript, grows with project size).
+- **F5:** `showInFolder()` (`functions/__init__.py:577-610`; the same code at `:561-594` on `develop`) ends with `QDesktopServices.openUrl(QUrl(path …))`. `QUrl(path)` is not a file URL. On Windows the drive letter becomes the scheme: with PyQt5 5.15.10, `QUrl('C:\\Users\\…')` has the scheme `c` and `isLocalFile()` is False. On any platform, a `#` in the path starts a fragment. The only caller is Help > Locate log file… (`mainWindow.py:1721`). On Linux every call goes through this fallback, on Windows only when Explorer cannot be started. Whether the Linux platform still opens a path without a scheme (for example through `xdg-open`) was not checked, and the effect on Windows was not checked either. Fix: `QUrl.fromLocalFile(…)`. On `personal/main` this is part of `de38879` "chore(macos): remove macOS support", with tests that replace `QProcess` and `QDesktopServices`, so nothing is started. That commit also removes the macOS branch, so for upstream port only the one line and the fallback tests. S.
 
 #### G — Tests, CI, i18n (short)
-- **G1:** `conftest.py:34-41` and `:64-71` use `NamedTemporaryFile` + `copytree` and never clean up. One run leaves about 120 folders and 100 `.msk` files (about 51 MB). The package also writes `~/.config/manuskript_tests/` and `~/.local/share/manuskript_tests/`. Use `tmp_path` plus a session-wide isolated HOME/XDG. S.
+- **G1:** `conftest.py:34-41` and `:64-71` use `NamedTemporaryFile` + `copytree` and never clean up. One run leaves about 120 folders and 100 `.msk` files (about 51 MB). The package also writes `~/.config/manuskript_tests/` and `~/.local/share/manuskript_tests/`. Use `tmp_path` plus a session-wide isolated HOME/XDG. S. The fixture part is done by the G5 fix: with it, a run on a copy of `1d7320f` left only pytest's own `pytest-of-<user>` folder in the temporary folder. The writes to `~/.config/manuskript_tests/` and `~/.local/share/manuskript_tests/` remain. On Windows, HOME and the XDG variables isolate nothing: Qt keeps these settings in the registry (`QSettings` with organization and application name, native format) and the data under `%LOCALAPPDATA%` (`AppLocalDataLocation`, `functions/__init__.py:292-293`). The Wine run (G5) wrote `HKCU\Software\manuskript_tests\manuskript_tests` and `AppData\Local\manuskript_tests\manuskript_tests` into its prefix. On a developer's Windows machine the suite writes there too; on a CI runner it does not matter. The `test_main` tests that start the app in a child process skip outside Linux, partly for this reason (`test_main.py:124-126`).
 - **G2:** All 630 tests passed locally with Python 3.13 (system PyQt5 5.15.10, offscreen), pyspellchecker 0.9.1, symspellpy 6.10.1 and French and Italian Hunspell dictionaries. Without these, 622 pass and 8 are skipped, with Python 3.13 and with Python 3.11 using the pinned `requirements.txt` wheels. They have **not yet run in this repository's CI**. CI runs pytest on Python 3.9 in three jobs:
   - `pytest.yml`: Ubuntu 24.04, xvfb, PyQt5 from `requirements.txt`.
   - `build_linux.yml`: Ubuntu 22.04, latest PyQt5, offscreen, with `language_tool_python`, `symspellpy` and `pyspellchecker` installed. `language_tool_python` was not installed locally.
   - `build_osx.yml`: macOS.
 
-  The workflows only trigger on `develop` or by manual dispatch. So: enable Actions on the fork, then start them for each branch from the Actions tab, or open PRs inside the fork against its `develop`. S, possibly more if xvfb-only or Python-3.9-only failures show up.
+  The workflows only trigger on `develop` or by manual dispatch. So: enable Actions on the fork, then start them for each branch from the Actions tab, or open PRs inside the fork against its `develop`. S, possibly more if xvfb-only or Python-3.9-only failures show up. Version 3: still not run in CI. The suite has run under Wine with a Windows CPython (G5), and G6 lists two workflow problems found on the way.
 - **G3:** Run `make translation` (23 new strings). Change `outlineBasics.py:123` to `safeTranslate(…, 'Open {}').format(title)`, because today the string is formatted before it is translated, so it never is. Wrap the literal in `welcome.py:317` too. Check that PyInstaller and Flatpak ship the `qtbase_*.qm` that `9c279f8` now loads. S.
 - **G4:** Rare segfault at interpreter exit (`focusOutEvent → submit()` while widgets are destroyed). Pre-existing, not reliably reproducible. Guard `submit()` during teardown and use `QPersistentModelIndex` in `_indexes`. S.
+- **G5:** The suite under Windows, run under Wine (not a real Windows).
+  - **Setup:** Wine on Linux, the embeddable Windows CPython 3.12.10, PyQt5 5.15.11 / Qt 5.15.2, offscreen, no pandoc, an isolated Wine prefix. The tree was that of `personal/main`'s first commit `9288eb9`, which adds only `docs/` to `1d7320f`, so the code is that of `fix/all-quickfixes`.
+  - **Result:** 4 failed, 563 passed, 24 skipped, 39 errors (630 tests).
+    - 39 setup errors, all in `MWSampleProject` (`conftest.py:76-78`): it copies the sample project onto the name of a `NamedTemporaryFile` that is still open. Windows opens such a file with delete-on-close and refuses a second open: `PermissionError: [Errno 13]` in `shutil.copyfile`. `MWEmptyProject` (`:46-50`) has the same pattern, but did not fail, because `welcome.createFile()` writes nothing there.
+    - 2 failures in `test_save_keeps_symlinks_and_modes` and `test_zip_save_keeps_symlink_and_mode` (`test_save_load_regressions.py:336`, `:473`): they assert mode `0o600`. Windows files only have a read-only flag, so `os.stat()` reports `0o666`. The symlink and write parts of both tests passed.
+    - 2 failures in `test_pythonVersion`: an artefact of the embeddable Python, whose `python312._pth` leaves the current folder off `sys.path`, so the child Python cannot import `manuskript`. Both passed once the tree was added to that file. A normal CPython, as in CI, should not show this.
+    - With two changes made only in the throwaway copy (the fixture with `delete=False` and `close()`, and the `._pth` line): 2 failed (the mode tests), 604 passed, 24 skipped.
+    - 24 skips against 8 on Linux: all 5 `test_saveAsFailure` tests (a folder cannot be made read-only), 7 unreadable-file tests, 4 `test_main` tests (`/proc`, POSIX signals), 2 enchant tests without French and Italian dictionaries, and 6 pandoc or POSIX-permission tests. So the failed "Save as" path is not tested on Windows.
+  - **What it means for upstream:** No failure pointed to product code. Nothing failed in `os.replace`, locking, path case, separators or line endings. Before a Windows CI job can pass, the test code needs two small fixes. Wine is not Windows: antivirus, indexers, sync clients and real NTFS behaviour were not part of the run.
+  - **Fix:** On `personal/main`, `a709177` "test(fixtures): put the test projects in temporary folders": both fixtures make a folder with `tmp_path_factory.mktemp()`, close their project afterwards and remove the folder. `conftest.py` is the same on `1d7320f`, so the commit applies unchanged. Applied there together with the A10 fix, the Linux suite gave 624 passed, 8 skipped (622 plus A10's two tests). `71a1ad5` (G6) skips the two mode tests on Windows. With both, a Wine run on `personal/main` at `fd57142` (its last code commit) gave 5 failed, 647 passed, 30 skipped. All 5 failures are tests that start a child Python with `-c` and fail with "No module named 'manuskript'", because of the `._pth` artefact: the 3 `test_pythonVersion` tests and 2 `test_htmlPreviewFallback` tests, which exist only on `personal/main`. S.
+- **G6:** Two problems in the workflows, both also on `develop`:
+  - The job names use `matrix.python_version` (`pytest.yml:19`, `build_windows.yml:23`), but the matrix key is `python-version`, so the version shows blank (also listed in 3.3.3).
+  - `requirements.txt` pins `PyQt5-Qt5==5.15.17`. On PyPI that release has wheels for macOS and manylinux only, and no source archive. The last release with Windows wheels is 5.15.2 (checked on PyPI on 2026-11-02). So `pip install -r requirements.txt` cannot work on Windows (not run). The Windows build job does not use `requirements.txt` (it installs `pyqt5==5.15.7`), so this hits Windows developers and any future Windows test job (3.4 item 14).
+  - **Fix:** On `personal/main`, `71a1ad5` "ci(workflows): test on Linux (Python 3.10, 3.13) and Windows (3.12)" fixes the key, adds a `windows-latest` test job that installs `requirements.txt` with PyQt5-Qt5 5.15.2, and skips the two mode tests of G5 on Windows. Its Python versions follow the fork's floor (3.10), not a proposal for upstream (Q15). It has not run on GitHub Actions. S, plus whatever a first real Windows run shows.
 
 ## 3. Code quality assessment
 
@@ -653,12 +738,12 @@ Measured on `fix/all-quickfixes` at `eacaf8f` (before the D5 and `fix/review-fin
 
 **Strengths**
 - The v1 format is a good design: plain text, a VCS-friendly layout, MultiMarkdown metadata. The fixes changed no on-disk keys.
-- After the fixes, the save path is fail-safe in every scenario the tests and the fuzzer cover (remaining gaps: B7, B9):
+- After the fixes, the save path is fail-safe in every scenario the tests and the fuzzer cover (remaining gaps: B7, B9, and A9, which neither covered: two siblings with the same file name plus a failed write):
   - atomic `writeFile` (`version_1.py:124-163`),
   - rewrite instead of in-place moves,
   - a `freshTarget` guard instead of `rmtree`,
   - old files kept when new ones fail,
-  - case-only renames on case-insensitive file systems (emulated in a Linux test, not yet run on Windows or macOS).
+  - case-only renames on case-insensitive file systems (emulated in a Linux test; it also passed under Wine, see G5, but did not run on a real Windows or macOS).
 - Loading fails closed instead of opening an empty project that would later be saved over the real one.
 - The legacy `settings.pickle` is deliberately not loaded (no unpickling of untrusted data).
 
@@ -672,7 +757,7 @@ Measured on `fix/all-quickfixes` at `eacaf8f` (before the D5 and `fix/review-fin
 | An internal DnD move is an XML copy plus a delete: a window with duplicate IDs, editor tabs left holding detached objects, control characters (`\x0c`) silently stripped | `abstractModel.py:295-511`, `abstractItem.py:292-318` | Variants #719, #1264, #324. Slow drags of large folders (#918, #1193). |
 | A public tree-mutation API (`insertChild`, `outlineItem(parent=…)`) is used outside the model, followed by a bare `layoutChanged` | `ui/importers/importer.py:263`, `:297-320` | The model contract depends on discipline. The same pattern broke Move Up/Down. |
 | Persistence state (`_lastPath`) lives on items and travels through clipboard XML. Saving mutates the model. | `abstractItem.py:39`, `:312`; `version_1.py:325`, `:761`, `:531-539` | Every new item-creation path must remember to clear it (duplicate inherited the file). |
-| Four ID strategies; characters, plots and world reuse IDs; `int()` on unvalidated strings | see B6, B3 | Re-bound references; one hand-edited ID locks the user out of the project |
+| Four ID strategies; characters, plots and world reuse IDs; duplicate character IDs are kept; `int()` on unvalidated strings | see B6, B10, B3 | Re-bound references; one hand-edited ID locks the user out of the project |
 | The schema is scattered: the "computed, not persisted" list exists twice and has drifted (`charCount` is written to every `.md`/`folder.txt`), and the flat-data layout is hard-coded in 4 places | `version_1.py:818` vs `outlineItem.py:493-497` | Every scene edit rewrites the `folder.txt` of all its ancestors (sync churn) |
 | Quadratic path helpers on every autosave | 4,000 scenes in one folder: 1.6 s | Large imported projects stutter |
 | Dead code: `persosProxyModel.py`, `plotsProxyModel.py`, shadowed methods, `abstractModel.removed` grows forever | grep, pyflakes | Noise; memory held by removed items, including their full text |
@@ -708,9 +793,9 @@ Measured on `fix/all-quickfixes` at `eacaf8f` (before the D5 and `fix/review-fin
 
 | Weakness | Evidence | Consequence |
 |---|---|---|
-| CI tests only Python 3.9 (EOL since October 2025), runs no tests on Windows, installs no pandoc, has no lint step. Job names reference `matrix.python_version` while the key is `python-version`, so the version shows blank. | `.github/workflows/*.yml` | The new `os.replace`-based saving has never run on Windows in CI. Regressions on 3.11–3.14 reach users first. |
-| Dependencies are declared in about 9 places with conflicting pins: `requirements.txt` PyQt5 5.15.11, workflows 5.15.7 or unpinned, Docker uses the distro package. There is no `pyproject.toml` and no `requires-python`. `pyenchant` is "required" but treated as optional. macOS builds lack `markdown`, `symspellpy`, `pyspellchecker` and `language_tool_python` (only `pyenchant` is included). | `requirements.txt`, workflows, `Dockerfile`, `package/*`, `snap/` | Different features per platform; unclear support matrix |
-| The test package creates the QApplication and MainWindow at import time and writes to `~/.config/manuskript_tests` and `~/.local/share/manuskript_tests`. The old fixtures leak temp data (G1). | `tests/__init__.py:11-17`, `conftest.py` | Order-dependent tests, polluted developer machines |
+| CI tests only Python 3.9 (EOL since October 2025), runs no tests on Windows, installs no pandoc, has no lint step. Job names reference `matrix.python_version` while the key is `python-version`, so the version shows blank (G6). | `.github/workflows/*.yml` | The new `os.replace`-based saving has never run on Windows in CI (only once under Wine, G5). Regressions on 3.11–3.14 reach users first. |
+| Dependencies are declared in about 9 places with conflicting pins: `requirements.txt` PyQt5 5.15.11, workflows 5.15.7 or unpinned, Docker uses the distro package. There is no `pyproject.toml` and no `requires-python`. `pyenchant` is "required" but treated as optional. macOS builds lack `markdown`, `symspellpy`, `pyspellchecker` and `language_tool_python` (only `pyenchant` is included). `requirements.txt` cannot be installed on Windows (`PyQt5-Qt5==5.15.17`, G6). | `requirements.txt`, workflows, `Dockerfile`, `package/*`, `snap/` | Different features per platform; unclear support matrix |
+| The test package creates the QApplication and MainWindow at import time and writes to `~/.config/manuskript_tests` and `~/.local/share/manuskript_tests`. The old fixtures leak temp data (G1) and fail on Windows (G5). | `tests/__init__.py:11-17`, `conftest.py` | Order-dependent tests, polluted developer machines |
 | The translation workflow is manual and partly broken: `util/linguist_update.py` selects `*.qm` instead of `*.ts`, the makefile `linguist` convenience target is hard-coded to `fr`, and there is no drift check | `util/linguist_update.py:24-31`, `makefile:27-34` | New strings stay English |
 | Platform end-of-life risk: Qt 5.15 is the last Qt 5 series, the QtWebKit path is optional but packaged (rpm, snap), and the vendored **pdf.js 1.4.237 (2016)** predates later security fixes (e.g. CVE-2024-4367). Exposure is limited, because only PDFs Manuskript generated itself are previewed. | `ui/views/webView.py`, `PDFViewer.py`, `libs/pdf.js` | Packaging gets harder; a late migration is risky |
 | Repo hygiene: Travis-era scripts (`package/prepare_*.sh`), `.codeclimate.yml`, `TODO.t2t` (2015), a 1-byte `manuskript/test.py`, a makefile `compile` target that points to a missing `setup.py`, a wrong `.msk` icon path in `manuskript.spec:92`, no `CONTRIBUTING.md` | | New contributors waste time on dead paths |
@@ -721,8 +806,8 @@ The order matters more than the size. Each step makes the next one safer, and no
 
 #### Quick wins (S, about ½ day each)
 1. **Model-tester gate.** Attach `QAbstractItemModelTester` (shipped with PyQt5) to `mdlOutline` in the DnD and load/save tests, with an allow-list. Fix the two one-line violations (`flags()` for the invalid index, `bottomRight` column).
-2. **Test isolation.** Use `tmp_path` in the two old fixtures, a session-wide temp HOME/XDG, and a `closeProject()` teardown (G1). `QStandardPaths.setTestModeEnabled` alone is not enough, because it still writes to `~/.qttest`.
-3. **CI matrix.** Test Python 3.9 (or the new floor), 3.11, 3.12 and 3.13. Install pandoc, fix the matrix key, remove the duplicate Linux test job.
+2. **Test isolation.** Use `tmp_path` in the two old fixtures, a session-wide temp HOME/XDG, and a `closeProject()` teardown (G1; a fix for the fixtures is listed in G5). `QStandardPaths.setTestModeEnabled` alone is not enough, because it still writes to `~/.qttest`.
+3. **CI matrix.** Test Python 3.9 (or the new floor), 3.11, 3.12 and 3.13. Install pandoc, fix the matrix key, remove the duplicate Linux test job (G6).
 4. **Lint gate.** `ruff check --select F --extend-exclude '*_ui.py,manuskript/ui/mainWindow.py,manuskript/ui/bulkInfoManager.py,manuskript/ui/characterInfoDialog.py' manuskript` with per-file ignores for today's findings, so the job starts green. Then one mechanical PR for unused imports and the dead modules.
 5. **One source of truth for the schema.** A single "computed, not persisted" set (which drops `charCount` from `.md`/`folder.txt`) and one flat-data layout, plus a golden-file test that pins the on-disk key names.
 6. **Translation refresh** and a `CONTRIBUTING.md`: dev setup, isolated test run, `make ui`/`make translation`, commit style, Weblate.
@@ -735,7 +820,7 @@ The order matters more than the size. Each step makes the next one safer, and no
 11. **One ID allocator** per model type (never reuse an ID within a project) and referential cleanup on delete in the model layer (B6).
 12. **Editors submit only real user edits.** `2a53412` does this for the multi-selection case (A1); this item makes it the rule for every editor. Also, the highlighter no longer changes block formats (C2).
 13. **A symmetric project lifecycle:** `deleteLater()` the old models and selection models, keep and delete the submenus, give timers a parent.
-14. **Run the tests on Windows in CI.** Add a `pyproject.toml` with extras (`spellcheck`, `export`, `test`) and a GUI entry point, and keep `requirements.txt` as the lock file.
+14. **Run the tests on Windows in CI.** Add a `pyproject.toml` with extras (`spellcheck`, `export`, `test`) and a GUI entry point, and keep `requirements.txt` as the lock file. Under Wine the suite already runs; G5 and G6 list the test and workflow fixes a Windows job needs first.
 
 #### Larger (L/XL, can be split further)
 15. **Persistence as an object with a plan/execute split.**
@@ -744,6 +829,7 @@ The order matters more than the size. Each step makes the next one safer, and no
     - Step 2: `serialize(project) → {path: content}` (pure), then `plan(store, files) → [Write, Remove, Keep, Move]`, then `execute(plan) → SaveReport`. The plan step can be tested and fuzzed without Qt.
     - Step 3: MainWindow shows the reports, and persistence no longer imports widgets.
     - About 1–2 weeks overall, in 3–4 PRs.
+    - Reference material: the fork owner's branch `personal/main` (not on GitHub at the time of writing) has a concrete design for a store-based folder save in `docs/save-design/README.md` (written for that branch's scope: one user, Linux and Windows, projects in git), with a prototype patch against `1d7320f` that passes the suite (634 passed, 8 skipped, re-run for this document), and implements zip snapshots of each project outside its folder (`manuskript/snapshots.py`).
 16. **A `Project` container instead of `F.mainWindow()`** in models and persistence, one model per PR (start with `plotModel`, which cannot even be constructed without a window).
 17. **Split `MainWindow` into per-tab controllers**: spellcheck menu, view menu, character, plot and world tabs, navigation. Start with the spellcheck menu (self-contained, already tested).
 18. **Background work:** asynchronous `QProcess` for pandoc, then a LanguageTool worker (D2).
@@ -762,11 +848,11 @@ Suggested order for the discussion: the first block determines how the fixes get
 
 **Policy decisions on open items**
 
-4. **Excepthook (B1):** keep "fail fast", or *log → one dialog → separate recovery copy → user chooses quit or continue*? If the user continues, may autosave keep writing the real project?
+4. **Excepthook (B1):** keep "fail fast", or *log → one dialog → separate recovery copy → user chooses quit or continue*? If the user continues, may autosave keep writing the real project? Reference material for the recovery copy: `personal/main` implements zip snapshots outside the project folder, including one when a save fails, unless it equals the newest snapshot of that kind: a file that stays locked gives one snapshot per change, not one per autosave (`manuskript/snapshots.py`, `f2bf84b`, see 3.4 item 15).
 5. **Damaged root files (B3):** salvage what lxml can recover and keep a `.damaged` backup, or keep refusing to open but name the broken file?
 6. **Multi-edit in the Outline tab (A1):** `2a53412` keeps editing several summaries at once and writes only real edits. Is that wanted, or should the field be disabled for multi-selections, like the metadata panel?
 7. **Dirty flag (A3):** `2f348bd` makes every structural change (rows inserted, removed or moved) mark the project modified. Is that OK?
-8. **IDs (B6, B5):** never reuse IDs (`max+1`, or a persisted counter)? When a label or status is deleted, reset the items that use it to "none", ask first, or move to stable IDs (a format change)?
+8. **IDs (B6, B5, B10):** never reuse IDs (`max+1`, or a persisted counter)? When a label or status is deleted, reset the items that use it to "none", ask first, or move to stable IDs (a format change)? When two characters share an ID, which one keeps it, and is a notice enough?
 9. **Foreign files in project folders (B7):** adopt hand-made scenes without ID, list them as "not loaded", or keep ignoring them? Is the subtree rewrite on rename acceptable long term, or are real directory renames wanted?
 10. **Signals (B8):** with "save on quit" off, should SIGTERM save anyway, or write a recovery copy instead of asking?
 11. **pandoc (E1, E2):** disable YAML metadata blocks by default (and migrate)? Use xelatex/lualatex by default when installed?
@@ -778,11 +864,12 @@ Suggested order for the discussion: the first block determines how the fixes get
 
 15. **Supported versions:** which Python versions are officially supported (and tested in CI)? Should the README state the tested floor rather than the 3.6 syntax floor?
 16. **Packaging:** should Manuskript become pip-installable (`pyproject.toml` with extras and an entry point)? Is `pyenchant` required or optional?
-17. **Refactoring:** are staged refactors welcome (3.4 items 7 and 9–13, and 15–17, split into small PRs with tests; only a persisted ID counter in item 11 would touch the format)? If so, persistence first or the model contract first?
+17. **Refactoring:** are staged refactors welcome (3.4 items 7 and 9–13, and 15–17, split into small PRs with tests; only a persisted ID counter in item 11 would touch the format)? If so, persistence first or the model contract first? For persistence, a concrete design with a prototype that passes the suite exists on `personal/main` (3.4 item 15).
 18. **Qt 6:** is a migration planned, and with which binding? May phase-1 changes (scoped enums, `QRegularExpression`, no `qApp`) be merged now on PyQt5? Can the QtWebKit path be dropped?
 19. **Tooling:** are `ruff` (F rules only to start), `pytest-qt` and mechanical cleanup PRs (unused imports, dead modules) acceptable?
 20. **Low-completion languages:** with `de6de99` (on `fix/ui-settings-search`), Settings lists every shipped `.qm`, including three at 0 %. Should that branch hide languages below some threshold before it is merged?
 21. **Small decisions** (marked ✋ in section 2 but without their own question):
+    - A9: may the items whose file names collide be renamed once (an `-ID` suffix), or should every outline file get its ID?
     - B9: is the `fsync` cost acceptable?
     - C5: keep `-- ` lines?
     - D4: per-language clitic lists?
@@ -805,16 +892,28 @@ QT_QPA_PLATFORM=offscreen python -m pytest -q manuskript/tests
 rm -rf "$T"
 ```
 
+On Windows this isolates nothing: the settings go to the registry and the data to `%LOCALAPPDATA%` (see G1).
+
 Results: `develop` 39 passed. `fix/all-quickfixes` 622 passed and 8 skipped (630 tests), both with Python 3.13 / PyQt5 5.15.10 / Qt 5.15.19 (system packages) and with Python 3.11 using the pinned wheels from `requirements.txt`. The skipped tests need pyspellchecker, symspellpy, or French and Italian dictionaries for enchant. With them installed (checked with Python 3.13), all 630 pass. Every single commit on the eight fix branches also passes the full suite on its own (91 runs), so `git bisect` works across them.
+
+Windows, under Wine (version 3, G5): a tree with the code of `1d7320f`, the embeddable Windows CPython 3.12.10, PyQt5 5.15.11 / Qt 5.15.2, offscreen, without pandoc. 4 failed, 563 passed, 24 skipped, 39 errors. With the fixture and the embeddable Python's `._pth` changed in a throwaway copy: 2 failed (the POSIX file-mode tests), 604 passed, 24 skipped. This was not a real Windows, and the Windows workflows were not run.
+
+Checks made for version 3 on fresh copies (Python 3.13, isolated HOME), all outside the branches:
+
+- A9: three tests (swap, chain, long titles) lose a scene on `1d7320f`, and the swap loses one on `develop`. With the six-line `-ID` prototype on `1d7320f`, the three tests pass, and the rest of the suite gives 622 passed, 8 skipped.
+- A10 and G5: `2d7a5de`'s two tests fail on `1d7320f`. With `2d7a5de`'s `version_1.py` change and `a709177`'s `conftest.py` applied: 624 passed, 8 skipped.
+- The save design's prototype patch (3.4 item 15) on `1d7320f`: 634 passed, 8 skipped.
+- B3, B7 and B10 on `1d7320f`: a character with `ID: ../../x` (the project does not open, or `loadProject` raises), a scene added while the project is open in a chapter that is then deleted (it no longer loads), and two pairs of characters with the same ID (deleting one removes the other). Results in the details.
 
 ### B. Upstream issues referenced by the fix branches
 
-#313 · #324 · #351 (related) · #450 · #467 · #601 · #661 · #694 · #719 · #761 · #808 · #811 · #819 · #918 · #929 (spellcheck part; export part still open, see E6) · #963 · #978 · #997 · #1010 (crash part only) · #1127 · #1128 · #1154 · #1178 · #1193 · #1215 · #1216 · #1220 · #1228 · #1264 · #1286 · #1306 · #1320 · #1356 · #1376 · #1393 · #1394 · #1421 · #1435 · #1449
+#313 · #324 · #351 (related) · #450 · #467 · #601 · #661 · #694 · #719 · #761 · #808 · #811 · #819 · #918 · #929 (spellcheck part; export part still open, see E6) · #963 · #978 · #997 · #1010 (crash part only) · #1127 · #1128 · #1154 · #1178 · #1193 · #1215 · #1216 · #1220 · #1228 · #1264 · #1286 · #1306 · #1320 (a remaining case: A9) · #1356 · #1376 · #1393 · #1394 · #1421 · #1435 · #1449
 
 "Referenced" means the commit message explains how the commit relates to the issue. Some issues are only partly addressed. Please check each one before closing it.
 
 ### C. Method and limitations
 
 - **Static and dynamic analysis:** code reading, isolated offscreen scripts (PyQt5 5.15.10 / Qt 5.15.19), `pyflakes`, `coverage.py` and an AST-based size/complexity scan. Performance numbers were measured with `QT_QPA_PLATFORM=offscreen`, so absolute times on a real display are higher.
-- **Not available:** Windows, macOS, Adwaita-qt, a real X server, and a running LanguageTool server (a fake tool was used). A Breeze style (6.8.1, Qt 5 plugin) was installed, but did not take the crashing path of B2 in an offscreen session. Items that depend on these are marked as not verified end to end.
-- **Line numbers** refer to `fix/all-quickfixes` at `eacaf8f`, before the D5 and `fix/review-findings` merges.
+- **Not available:** a real Windows (the suite ran under Wine only, G5), macOS, Adwaita-qt, a real X server, and a running LanguageTool server (a fake tool was used). A Breeze style (6.8.1, Qt 5 plugin) was installed, but did not take the crashing path of B2 in an offscreen session. The only manual test is the fork owner's B2 check with Breeze. Items that depend on these are marked as not verified end to end.
+- **Line numbers** refer to `fix/all-quickfixes` at `eacaf8f`, before the D5 and `fix/review-findings` merges. The items added in version 3 refer to `1d7320f`, or to `develop` where it says so.
+- **Version 3 sources:** the reports of the agents that made `personal/main` and of the save-design panel, the Wine runs, and the checks listed in appendix A. Commits on `personal/main` are cited by short hash and subject; that branch was not on GitHub at the time of writing.
