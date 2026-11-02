@@ -3,6 +3,9 @@
 
 """Fixtures."""
 
+import os
+import shutil
+
 import pytest
 
 
@@ -14,6 +17,17 @@ def closePreviousProject(MW):
     """
     MW.projectDirty = False
     MW.closeProject()
+
+
+def removeProject(MW, path):
+    """
+    Closes the temporary project ``path`` if it is still open, and removes the
+    folder that holds its .msk file and its project folder. If the folder
+    cannot be removed, pytest removes it with its other old temporary folders.
+    """
+    if MW.currentProject == os.path.normpath(path):
+        closePreviousProject(MW)
+    shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
 @pytest.fixture
@@ -38,47 +52,41 @@ def MWNoProject(MW):
     return MW
 
 @pytest.fixture
-def MWEmptyProject(MW):
+def MWEmptyProject(MW, tmp_path_factory):
     """
-    Creates a MainWindow and load an empty project.
+    Creates a MainWindow and load an empty project, in a new temporary folder.
     """
-    import tempfile
-    tf = tempfile.NamedTemporaryFile(suffix=".msk")
+    path = str(tmp_path_factory.mktemp("MWEmptyProject") / "empty.msk")
 
     closePreviousProject(MW)
     assert MW.currentProject == None
-    MW.welcome.createFile(tf.name, overwrite=True)
+    MW.welcome.createFile(path, overwrite=True)
     assert MW.currentProject != None
-    return MW
-
-    # If using with: @pytest.fixture(scope='session', autouse=True)
-    # yield MW
-    # # Properly destructed after. Otherwise: seg fault.
-    # MW.deleteLater()
+    yield MW
+    removeProject(MW, path)
 
 @pytest.fixture
-def MWSampleProject(MW):
+def MWSampleProject(MW, tmp_path_factory):
     """
-    Creates a MainWindow and load a copy of the Acts sample project.
+    Creates a MainWindow and load a copy of the Acts sample project, in a new
+    temporary folder.
     """
 
     from manuskript import functions as F
-    import os
     # Get the path of the first sample project. We assume it is here.
     spDir = F.appPath("sample-projects")
     lst = os.listdir(spDir)
     # We assume it's saved in folder, so there is a `name.msk` file and a
     # `name` folder.
     src = [f for f in lst if f[-4:] == ".msk" and f[:-4] in lst][0]
+    path = str(tmp_path_factory.mktemp("MWSampleProject") / src)
     src = os.path.join(spDir, src)
-    # Copy to a temp file
-    import tempfile
-    tf = tempfile.NamedTemporaryFile(suffix=".msk")
-    import shutil
-    shutil.copyfile(src, tf.name)
-    shutil.copytree(src[:-4], tf.name[:-4])
+    # Copy to the temp folder
+    shutil.copyfile(src, path)
+    shutil.copytree(src[:-4], path[:-4])
     closePreviousProject(MW)
-    MW.loadProject(tf.name)
+    MW.loadProject(path)
     assert MW.currentProject != None
 
-    return MW
+    yield MW
+    removeProject(MW, path)
