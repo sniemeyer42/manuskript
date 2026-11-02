@@ -1,7 +1,22 @@
 # Final design: the folder-mode save path of the personal fork
 
-> **Status: design, not implemented.** Nothing in this folder is used by the code yet. The
-> save rewrite (section 16, steps 1-11) is still to be done on `personal/main`.
+> **Status: design, not implemented.** The save rewrite (section 16, steps 1-9 and 11) is
+> still to be done on `personal/main`.
+>
+> **Exception: step 10, the snapshots (section 10), is implemented ahead of the rewrite**,
+> on today's save code (`manuskript/snapshots.py`, commits "feat(snapshots): ..."). It
+> differs from section 10 in these points, each explained in the commit messages:
+>
+> - A daily snapshot is due 24 h after the newest *daily* snapshot, not after the newest
+>   snapshot of any kind (otherwise a project opened every day never gets one).
+> - Names use UTC. A name dated in the future counts as the oldest.
+> - The open and disk snapshots read the whole project folder (no `FolderStore` yet), except
+>   dot-folders and Manuskript's temporary files. Files outside `outline/`, `characters/`
+>   and the root project files are limited to 20 MB each and 50 MB in all.
+> - "Save as" (or a new project) onto an older project removes or replaces nothing unless
+>   the disk snapshot holds that project completely. Otherwise it shows "Project not saved".
+> - "Overwrite" after a conflict does not exist yet, so `takeDisk()` has no call site
+>   there. Steps 5-6 and 11 add those call sites.
 >
 > **Who wrote this.** This document and the prototype were written by Claude (Anthropic's
 > AI model) in Claude Code, in a design workflow: three independent designs, each with a
